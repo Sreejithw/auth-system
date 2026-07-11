@@ -37,7 +37,10 @@ RUN apt-get update \
 # Install production dependencies only. argon2 pulls its glibc prebuilt binary
 # here, so no compiler toolchain is needed.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# npm ci needs the CLI; drop npm afterward so Trivy does not flag its bundled
+# undici (CVE-2026-12151) — the runtime only executes node, not npm.
+RUN npm ci --omit=dev \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Application artifacts: compiled server, migrations, and the entrypoint.
 COPY --from=builder /app/dist ./dist
