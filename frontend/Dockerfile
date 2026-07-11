@@ -29,6 +29,9 @@ RUN npm run build
 # ---- Stage 2: runtime (static files served by nginx) ----
 FROM nginx:alpine AS runtime
 
+# Pull patched Alpine packages (e.g. c-ares, libexpat) so Trivy OS scans pass.
+RUN apk upgrade --no-cache
+
 # SPA-aware server config (client-side routing, gzip, cache headers).
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
