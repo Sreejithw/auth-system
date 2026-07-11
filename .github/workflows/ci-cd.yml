@@ -177,7 +177,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
       - name: Trivy scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to an immutable commit SHA (known-safe, v0.35.0) rather than a
+        # tag: trivy-action's tags were force-pushed in the Mar 2026 supply-chain
+        # compromise, so tags are not trustworthy. Bump deliberately after review.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: ${{ steps.meta.outputs.scan_ref }}
           format: table
@@ -249,7 +252,10 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
       - name: Trivy scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to an immutable commit SHA (known-safe, v0.35.0) rather than a
+        # tag: trivy-action's tags were force-pushed in the Mar 2026 supply-chain
+        # compromise, so tags are not trustworthy. Bump deliberately after review.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: ${{ steps.meta.outputs.scan_ref }}
           format: table
