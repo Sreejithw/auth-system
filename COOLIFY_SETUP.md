@@ -474,10 +474,11 @@ A mismatch here is the most common cause of "works in curl, fails in browser".
 ## 10. Set up deploy webhooks for GitHub Actions
 
 CI/CD (the project's "Phase 5") builds and pushes images to GHCR, then tells
-Coolify to pull and redeploy by calling a **deploy webhook**. Set up one webhook
-per deployable resource per environment.
+Coolify to pull and redeploy by calling a **deploy webhook**. The workflow calls
+**one webhook URL per GitHub Environment** (`staging` on `develop`, `production`
+on `main`).
 
-### 10.1 Find the webhook URL and token
+### 10.1 Find the webhook URL and API token in Coolify
 
 For each resource (typically the backend and frontend of each environment):
 
@@ -489,36 +490,53 @@ For each resource (typically the backend and frontend of each environment):
    https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>&force=false
    ```
 
-3. Authentication uses a **Coolify API token** as a Bearer token, created under
+3. Create a **Coolify API token** (separate from the webhook URL) under
    **Settings → API Tokens / Keys**. Create a token with deploy permission and
-   copy it. (Some versions embed a secret in the URL instead; use whatever that
-   resource's webhook panel shows.)
+   copy it. The workflow sends this as `Authorization: Bearer <token>`. (Some
+   Coolify versions embed auth in the URL instead; use whatever that resource's
+   webhook panel shows.)
 
-Triggering it manually looks like (for reference, **PowerShell local**):
+Triggering it manually looks like (for reference, **PowerShell local** — the
+workflow uses `GET`, not `POST`):
 
 ```powershell
-curl.exe -X POST "https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>" -H "Authorization: Bearer <coolify-api-token>"
+curl.exe -X GET "https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>&force=false" -H "Authorization: Bearer <coolify-api-token>"
 ```
 
-### 10.2 What GitHub Actions expects
+### 10.2 Create GitHub Environments and secrets
 
-The CI pipeline references two repository secrets:
+The deploy job in `.github/workflows/ci-cd.yml` targets GitHub Environments
+named **`staging`** (branch `develop`) and **`production`** (branch `main`). If
+these environments do not exist yet, create them first:
 
-- `COOLIFY_STAGING_WEBHOOK`
-- `COOLIFY_PRODUCTION_WEBHOOK`
+1. GitHub repo → **Settings → Environments → New environment**
+2. Create **`staging`**, then repeat for **`production`**
+3. (Optional) On `production`, add **Required reviewers** to gate deploys behind
+   manual approval.
 
-Paste the corresponding webhook URL (and, if your version separates them, the API
-token) into these GitHub repository secrets under **GitHub repo → Settings →
-Secrets and variables → Actions**. The workflow will `POST` to the staging webhook
-on a staging deploy and the production webhook on a production deploy, after the
-new `staging`/`production`-tagged image has been pushed to GHCR.
+Add these **Actions secrets** (repo → **Settings → Secrets and variables →
+Actions**). Per-environment webhook URLs should be stored on the matching
+environment; the API token can be repo-wide or duplicated on both environments:
 
-> If a single environment has both a backend and a frontend resource, you have two
-> choices: point the environment's `COOLIFY_*_WEBHOOK` at one resource and let it
-> pull, or store both resource webhooks and call both from the workflow. Match this
-> to how the Phase 5 workflow is written. The key handoff is: **the webhook
-> URL(s)/token from Coolify become the `COOLIFY_STAGING_WEBHOOK` /
-> `COOLIFY_PRODUCTION_WEBHOOK` GitHub Actions secrets.**
+| Secret name                    | Where to add it in GitHub UI                         | Value |
+| ------------------------------ | ---------------------------------------------------- | ----- |
+| `COOLIFY_STAGING_WEBHOOK`      | Environment **`staging`** → Environment secrets      | Full deploy webhook URL for a **staging** resource (see note below). |
+| `COOLIFY_PRODUCTION_WEBHOOK`   | Environment **`production`** → Environment secrets   | Full deploy webhook URL for a **production** resource. |
+| `COOLIFY_TOKEN`                | Repository secrets (or both environments)            | Coolify API token (Bearer). One token can cover all webhooks. |
+
+Repository-level secrets also work for the webhook URLs, but environment-scoped
+secrets are recommended so staging and production stay isolated.
+
+After a push to `develop`, the workflow `GET`s `COOLIFY_STAGING_WEBHOOK` with
+`COOLIFY_TOKEN`. If the staging webhook secret is missing or empty, the deploy
+job fails with: **`Deploy webhook secret is not set for this environment.`**
+
+> **Backend + frontend:** each Coolify resource has its own webhook UUID. The
+> workflow calls **one** URL per environment. For initial setup, point
+> `COOLIFY_STAGING_WEBHOOK` at the **staging backend** resource (it self-migrates
+> on boot). After CI deploys the backend, manually **Redeploy** the staging
+> frontend in Coolify (or extend the workflow later to call both webhooks). Use
+> the production backend webhook URL for `COOLIFY_PRODUCTION_WEBHOOK`.
 
 ---
 
@@ -671,12 +689,13 @@ logs):
 These are the values that must flow between the two systems. Get these right and
 CI/CD deploys cleanly.
 
-**From Coolify -> into GitHub Actions repository secrets:**
+**From Coolify -> into GitHub Actions secrets** (see step 10.2 for UI paths):
 
-| GitHub Actions secret        | Where it comes from in Coolify                                  |
-| ---------------------------- | --------------------------------------------------------------- |
-| `COOLIFY_STAGING_WEBHOOK`    | Staging resource(s) → Webhooks: the deploy webhook URL (+ API token if separate). |
-| `COOLIFY_PRODUCTION_WEBHOOK` | Production resource(s) → Webhooks: the deploy webhook URL (+ API token if separate). |
+| GitHub Actions secret        | GitHub scope   | Where it comes from in Coolify                                  |
+| ---------------------------- | -------------- | --------------------------------------------------------------- |
+| `COOLIFY_STAGING_WEBHOOK`    | `staging` env  | Staging resource → Webhooks: full deploy webhook URL.            |
+| `COOLIFY_PRODUCTION_WEBHOOK` | `production` env | Production resource → Webhooks: full deploy webhook URL.      |
+| `COOLIFY_TOKEN`              | repo (or env)  | Coolify **Settings → API Tokens / Keys** (Bearer token).        |
 
 **Set in GitHub Actions (build variables), consumed by Coolify indirectly via the image:**
 
