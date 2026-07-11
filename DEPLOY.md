@@ -2,8 +2,12 @@
 
 This document covers building the container images, running database migrations,
 and the environment variables required to ship the auth system to an
-**x86/amd64** Linux server. It does **not** cover CI/CD or Coolify (a later
-phase).
+**x86/amd64** Linux server.
+
+> **CI/CD (Phase 5):** the automated GitHub Actions pipeline (build, scan, push
+> to GHCR, and trigger the Coolify deploy) is documented in
+> [`.github/README.md`](.github/README.md), including the full list of GitHub
+> secrets/variables you must configure.
 
 ## Components
 
