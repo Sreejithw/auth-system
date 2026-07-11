@@ -1,0 +1,25 @@
+# Never copy local deps or build output into the image; they are produced
+# fresh inside the build stages.
+node_modules
+dist
+build
+
+# Secrets / local env — injected at runtime by the platform instead.
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+*.log
+npm-debug.log*
+.cache
+*.tsbuildinfo
+coverage
+
+# Docker / VCS / editor cruft
+Dockerfile
+.dockerignore
+.git
+.gitignore
+.DS_Store
+Thumbs.db

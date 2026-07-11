@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: auth-system-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-authuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-authpass}
+      POSTGRES_DB: ${POSTGRES_DB:-authdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # NOTE: The schema is NO LONGER applied via an init mount. Database schema
+      # is now owned by node-pg-migrate (backend/migrations/). After the DB is
+      # up, apply it from the backend package:
+      #   cd backend; npm run migrate
+      # (Migrations are idempotent, so this is safe to re-run against an
+      # already-populated dev database.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-authuser} -d ${POSTGRES_DB:-authdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

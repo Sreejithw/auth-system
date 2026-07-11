@@ -1,0 +1,25 @@
+# Deps and build output are produced inside the build stage.
+node_modules
+dist
+build
+
+# Local env — VITE_API_URL is supplied as a --build-arg instead.
+.env
+.env.*
+!.env.example
+
+# Logs and caches
+*.log
+npm-debug.log*
+.cache
+*.tsbuildinfo
+coverage
+node_modules/.vite
+
+# Docker / VCS / editor cruft
+Dockerfile
+.dockerignore
+.git
+.gitignore
+.DS_Store
+Thumbs.db
