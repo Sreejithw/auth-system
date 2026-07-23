@@ -207,6 +207,8 @@ jobs:
     needs: [backend, frontend, gitleaks]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    # Make environment-scoped VITE_API_URL_* variables available while building.
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     permissions:
       contents: read
       packages: write
@@ -234,6 +236,31 @@ jobs:
             echo "api_url=${{ vars.VITE_API_URL_STAGING }}" >> "$GITHUB_OUTPUT"
           fi
           echo "scan_ref=${FRONTEND_IMAGE}:${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate API URL
+        env:
+          VITE_API_URL: ${{ steps.meta.outputs.api_url }}
+        run: |
+          node <<'NODE'
+          const value = process.env.VITE_API_URL?.trim();
+          if (!value) {
+            console.error("::error::The selected VITE API URL is not configured.");
+            process.exit(1);
+          }
+
+          let url;
+          try {
+            url = new URL(value);
+          } catch {
+            console.error("::error::The selected VITE API URL is not a valid URL.");
+            process.exit(1);
+          }
+
+          if (url.protocol !== "http:" && url.protocol !== "https:") {
+            console.error("::error::The selected VITE API URL must use http or https.");
+            process.exit(1);
+          }
+          NODE
 
       # VITE_API_URL is baked into the static bundle at BUILD time (Vite inlines
       # it), so it must be provided here as a build-arg per environment.
