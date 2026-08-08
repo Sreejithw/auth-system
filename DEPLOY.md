@@ -32,15 +32,26 @@ compiler toolchain is required.
 | `DATABASE_URL`   | yes      | `postgres://user:pass@db-host:5432/authdb`         | Used by the app AND migrations. |
 | `SESSION_SECRET` | yes      | 64 hex chars                                       | Min 32 chars. |
 | `CSRF_SECRET`    | yes      | 64 hex chars (different value)                     | Min 32 chars. |
+| `APP_VERSION`    | no       | `1.0.0-qa.42`                                      | Immutable build identifier, injected by CI. |
+| `GIT_SHA`        | no       | full commit SHA                                    | Source revision, injected by CI. |
+| `BUILD_TIME`     | no       | ISO-8601 timestamp                                 | Image build time, injected by CI. |
+| `FLIPT_ENABLED`  | no       | `true`                                             | Enables the external feature-flag provider. Defaults to `false`. |
+| `FLIPT_URL`      | no       | `http://flipt:8080`                                | Internal Flipt URL; never expose its token to the SPA. |
+| `FLIPT_NAMESPACE`| no       | `auth-system-qa`                                   | Isolates flag values by environment. |
+| `FLIPT_TOKEN`    | no       | secret client token                                | Required only when Flipt authentication is enabled. |
 
 The loader (`backend/src/config/env.ts`, zod) **fails fast at boot** if any
 required var is missing or malformed.
 
-### Frontend (build-time — baked into the static bundle)
+### Frontend (runtime — generated when the container starts)
 
-| Variable        | When       | Example                     | Notes |
-| --------------- | ---------- | --------------------------- | ----- |
-| `VITE_API_URL`  | build only | `https://api.example.com`   | Inlined by Vite at build. Changing it requires rebuilding the image. |
+| Variable        | Required | Example                   | Notes |
+| --------------- | -------- | ------------------------- | ----- |
+| `API_URL`       | yes      | `https://api.example.com` | Written to `/config.json`; the same image digest works in every environment. |
+
+`VITE_API_URL` remains a local-development fallback only. Production operators
+change `API_URL` in Coolify and restart/redeploy the same image; no rebuild is
+required.
 
 ### Generating real secrets (PowerShell)
 
@@ -57,10 +68,12 @@ Run from the repository root. On an amd64 host the default platform is already
 
 ```powershell
 # Backend
-docker build -t auth-backend:latest ./backend
+docker build --build-arg APP_VERSION=1.0.0-qa.1 --build-arg GIT_SHA=local `
+  --build-arg BUILD_TIME=local -t auth-backend:latest ./backend
 
-# Frontend (VITE_API_URL is baked in at build time)
-docker build --build-arg VITE_API_URL=https://api.example.com -t auth-frontend:latest ./frontend
+# Frontend (environment-neutral; API_URL is supplied when it runs)
+docker build --build-arg APP_VERSION=1.0.0-qa.1 --build-arg GIT_SHA=local `
+  --build-arg BUILD_TIME=local -t auth-frontend:latest ./frontend
 ```
 
 ## Database migrations
@@ -93,7 +106,9 @@ docker run -d --name auth-backend -p 4000:4000 `
   auth-backend:latest
 
 # Frontend
-docker run -d --name auth-frontend -p 8080:80 auth-frontend:latest
+docker run -d --name auth-frontend -p 8080:80 `
+  -e API_URL=https://api.example.com `
+  auth-frontend:latest
 ```
 
 Put both behind a TLS-terminating reverse proxy in production. `NODE_ENV=production`
@@ -102,8 +117,8 @@ work end-to-end. The app sets `trust proxy = 1` in production.
 
 ## Local development is unaffected
 
-- `docker compose up -d` still starts Postgres on `localhost:5432` with the same
-  credentials and persistent `pgdata` volume (nothing is wiped).
+- `docker compose up -d` starts Postgres (and the optional local Flipt service)
+  with persistent volumes.
 - `cd backend; npm run dev` and `cd frontend; npm run dev` work exactly as
   before. The only new local step for a fresh database is `npm run migrate`
   (previously the schema was applied via the compose init mount).

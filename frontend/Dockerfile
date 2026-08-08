@@ -3,10 +3,8 @@
 # =============================================================================
 # Frontend image — multi-stage build.
 #
-# IMPORTANT: Vite inlines `VITE_*` variables at BUILD time. `VITE_API_URL` is
-# therefore a build ARG that gets baked into the static bundle — it is NOT a
-# runtime setting. To point the app at a different API, rebuild the image with
-# a different `--build-arg VITE_API_URL=...`.
+# The API URL is injected at container startup through API_URL. This keeps the
+# image environment-neutral so the exact same digest can be promoted.
 #
 # Target platform: linux/amd64 (x86-64 deploy server).
 # =============================================================================
@@ -14,10 +12,6 @@
 # ---- Stage 1: builder ----
 FROM node:24-bookworm-slim AS builder
 WORKDIR /app
-
-# API base URL, baked into the bundle at build time.
-ARG VITE_API_URL=http://localhost:4000
-ENV VITE_API_URL=${VITE_API_URL}
 
 # Install deps from the committed lockfile, then build.
 COPY package.json package-lock.json ./
@@ -29,6 +23,16 @@ RUN npm run build
 # ---- Stage 2: runtime (static files served by nginx) ----
 FROM nginx:alpine AS runtime
 
+ARG APP_VERSION=development
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
+
 # Pull patched Alpine packages (e.g. c-ares, libexpat) so Trivy OS scans pass.
 RUN apk upgrade --no-cache
 
@@ -37,6 +41,10 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Built static assets.
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY docker-entrypoint.d/40-runtime-config.sh /docker-entrypoint.d/40-runtime-config.sh
+
+RUN sed -i 's/\r$//' /docker-entrypoint.d/40-runtime-config.sh \
+  && chmod +x /docker-entrypoint.d/40-runtime-config.sh
 
 EXPOSE 80
 

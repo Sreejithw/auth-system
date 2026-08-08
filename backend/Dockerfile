@@ -26,7 +26,16 @@ RUN npm run build
 
 # ---- Stage 2: runtime (prod-only deps) ----
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production
+ARG APP_VERSION=development
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV NODE_ENV=production \
+    APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
 WORKDIR /app
 
 # curl is used by the HEALTHCHECK below.

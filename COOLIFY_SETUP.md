@@ -2,7 +2,7 @@
 
 Step-by-step guide to deploy the **auth-system** app to a self-hosted
 [Coolify](https://coolify.io) instance on a Hetzner Cloud server, with separate
-**staging** and **production** environments, free `sslip.io` HTTPS hostnames, and
+**QA**, **staging**, and **production** environments, free `sslip.io` HTTPS hostnames, and
 images pulled from GitHub Container Registry (GHCR).
 
 This is an operations runbook. It does not change any application code. It is
@@ -11,7 +11,7 @@ tailored to how this project actually builds and runs:
 | Component | Image                                     | Serves            | Port | Notes |
 | --------- | ----------------------------------------- | ----------------- | ---- | ----- |
 | Backend   | `ghcr.io/sreejithw/auth-system-backend`   | Express API       | 4000 | Self-migrates on boot (`node-pg-migrate up`). Health check on `/health`. |
-| Frontend  | `ghcr.io/sreejithw/auth-system-frontend`  | nginx-served SPA  | 80   | `VITE_API_URL` is **baked at build time in CI**, not a Coolify runtime var. |
+| Frontend  | `ghcr.io/sreejithw/auth-system-frontend`  | nginx-served SPA  | 80   | Requires runtime `API_URL`; one image digest is promoted across environments. |
 
 Key facts that drive the whole setup:
 
@@ -22,8 +22,8 @@ Key facts that drive the whole setup:
   and `api.<...>.sslip.io`).
 - The backend validates env at boot with zod and **fails fast** if anything
   required is missing or malformed.
-- The frontend's API URL cannot be changed at runtime; pointing it at a different
-  API means rebuilding the image with a different `--build-arg VITE_API_URL`.
+- The frontend generates `/config.json` from `API_URL` at container startup.
+  Configure this value in every Coolify frontend resource.
 
 > Coolify UI labels and menu positions change between versions. Where a step
 > depends on an exact label, this runbook describes the general location and what
@@ -38,7 +38,7 @@ Key facts that drive the whole setup:
 2. [Server hardening quick pass](#2-server-hardening-quick-pass)
 3. [Install Coolify](#3-install-coolify)
 4. [Connect the server in Coolify](#4-connect-the-server-in-coolify)
-5. [Create a project with staging and production](#5-create-a-project-with-staging-and-production)
+5. [Create a project with QA, staging, and production](#5-create-a-project-with-qa-staging-and-production)
 6. [Add GHCR pull credentials](#6-add-ghcr-pull-credentials)
 7. [Create backend and frontend resources per environment](#7-create-backend-and-frontend-resources-per-environment)
 8. [Provision PostgreSQL per environment](#8-provision-postgresql-per-environment)
@@ -212,16 +212,16 @@ box.)
 
 ---
 
-## 5. Create a project with staging and production
+## 5. Create a project with QA, staging, and production
 
 1. Go to **Projects → New Project**. Name it e.g. `auth-system`.
 2. A project contains **environments**. Coolify creates a default one (often
    `production`). Rename or keep it as **production**.
-3. Add a second environment named **staging** (look for "Environments" within the
-   project, then add/new).
+3. Add environments named **staging** and **qa** (look for "Environments" within
+   the project, then add/new).
 
-You will end up with one project `auth-system` holding two environments:
-`staging` and `production`. Each environment will get its own backend, frontend,
+You will end up with one project `auth-system` holding three environments:
+`qa`, `staging`, and `production`. Each environment gets its own backend, frontend,
 and Postgres resources, with **its own secrets and its own database**. Never share
 `SESSION_SECRET`/`CSRF_SECRET` or a database between environments.
 
@@ -262,9 +262,10 @@ registry authentication. Same values either way.
 
 ## 7. Create backend and frontend resources per environment
 
-Do this **twice** — once in the `staging` environment, once in `production`. The
-only differences between environments are the **image tag** (`staging` vs
-`production`), the **hostnames**, the **database**, and the **secrets**.
+Do this **three times** — in `qa`, `staging`, and `production`. The only
+differences are the image tag, hostnames, database, runtime configuration, and
+secrets. QA uses tag `qa`, staging uses `staging`, and production uses
+`production`.
 
 Within the project, select the target environment first, then **Add Resource → Docker
 Image** (a resource deployed from a prebuilt image, not from source).
@@ -274,8 +275,7 @@ Image** (a resource deployed from a prebuilt image, not from source).
 **Image:**
 
 - Image: `ghcr.io/sreejithw/auth-system-backend`
-- Tag: `staging` in the staging environment, `production` in the production
-  environment.
+- Tag: `qa`, `staging`, or `production` to match the environment.
 - Registry credential: select the GHCR credential from step 6.
 
 **Port / networking:**
@@ -302,6 +302,10 @@ Mark the secret ones as secret/build-safe as offered. Set:
 | `CORS_ORIGIN`    | `https://app.<staging-ip-with-dashes>.sslip.io`           | Exact frontend origin (scheme+host, no trailing slash). Must match the frontend URL exactly. |
 | `SESSION_SECRET` | *(64 hex chars — generate, see below)*                    | Min 32 chars. Unique per environment. |
 | `CSRF_SECRET`    | *(64 hex chars, DIFFERENT value — generate)*              | Min 32 chars. Unique per environment and different from `SESSION_SECRET`. |
+| `FLIPT_ENABLED`  | `true` after Flipt is configured                           | Keep `false` during bootstrap; code defaults preserve current behavior. |
+| `FLIPT_URL`      | internal Flipt URL                                         | Never expose the Flipt token or internal URL to the browser. |
+| `FLIPT_NAMESPACE`| `auth-system-qa` / `auth-system-staging` / `auth-system-production` | Isolates flag values per environment. |
+| `FLIPT_TOKEN`    | client token (secret)                                      | Only required when Flipt authentication is enabled. |
 
 Generate the two secrets on your machine — **PowerShell (local)**, from `DEPLOY.md`:
 
@@ -309,7 +313,7 @@ Generate the two secrets on your machine — **PowerShell (local)**, from `DEPLO
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Run it **four times total** (two secrets x two environments) so every value is
+Run it **six times total** (two secrets x three environments) so every value is
 distinct. If you do not have Node locally, generate them on the server instead:
 
 ```bash
@@ -325,7 +329,7 @@ openssl rand -hex 32
 **Image:**
 
 - Image: `ghcr.io/sreejithw/auth-system-frontend`
-- Tag: `staging` or `production` to match the environment.
+- Tag: `qa`, `staging`, or `production` to match the environment.
 - Registry credential: the GHCR credential from step 6.
 
 **Port / networking:**
@@ -338,15 +342,12 @@ openssl rand -hex 32
 
 **Environment variables:**
 
-- **None required at runtime.** This is the critical, project-specific point:
-  `VITE_API_URL` is a Vite build-time variable that is **inlined into the static
-  bundle when the image is built in CI**. Setting it in Coolify does nothing for a
-  prebuilt image. Coolify simply serves the already-built files on port 80.
-- Therefore the correct API URL must be provided as the **GitHub Actions build
-  argument per environment** (see step 14). Concretely, the staging image must be
-  built with `--build-arg VITE_API_URL=https://api.<staging-ip-with-dashes>.sslip.io`
-  and the production image with the production API URL. If the frontend calls the
-  wrong API, you have to rebuild/republish the image, not edit a Coolify var.
+- Set `API_URL` to this environment's exact backend HTTPS origin, with no
+  trailing slash. Example:
+  `https://api-staging.<ip-with-dashes>.sslip.io`.
+- The container writes this value to `/config.json` before nginx starts. This is
+  what allows CI to promote the exact same frontend image digest from QA to
+  staging and production.
 
 Assign domains to both resources in step 9.
 
@@ -354,7 +355,7 @@ Assign domains to both resources in step 9.
 
 ## 8. Provision PostgreSQL per environment
 
-Each environment gets its own database. Do this twice (staging, production).
+Each environment gets its own database. Do this three times.
 
 1. In the environment, **Add Resource → Database → PostgreSQL** (choose a version;
    the app is developed against Postgres 16).
@@ -405,6 +406,19 @@ Each environment gets its own database. Do this twice (staging, production).
   psql "$DATABASE_URL" -c "\dt"
   ```
 
+### 8.3 Deploy the Flipt control plane
+
+Create one Docker Image resource from
+`ghcr.io/flipt-io/flipt:v2.11.0`, expose port `8080` only on Coolify's internal
+network, and attach persistent storage at `/var/opt/flipt`. Enable Flipt
+authentication and create a client token for each backend environment.
+
+Keep the administration UI private (VPN/SSH tunnel or a separately protected
+operator-only domain). Configure the three namespaces and flag catalog in
+[`FEATURE_FLAGS.md`](FEATURE_FLAGS.md), then set each backend's `FLIPT_URL` to
+the Flipt resource's internal URL. Back up the persistent volume. Authentication
+must remain functional when Flipt is down because code defaults are used.
+
 ---
 
 ## 9. Assign sslip.io domains and confirm TLS
@@ -429,6 +443,7 @@ subdomain label. A clean scheme:
 
 | Environment | Frontend hostname                          | Backend hostname                          |
 | ----------- | ------------------------------------------ | ----------------------------------------- |
+| QA          | `app-qa.<ip-with-dashes>.sslip.io`         | `api-qa.<ip-with-dashes>.sslip.io`        |
 | Staging     | `app-staging.<ip-with-dashes>.sslip.io`    | `api-staging.<ip-with-dashes>.sslip.io`   |
 | Production  | `app.<ip-with-dashes>.sslip.io`            | `api.<ip-with-dashes>.sslip.io`           |
 
@@ -438,7 +453,7 @@ cookie same-site. Do not put them on unrelated bases.
 
 ### 9.2 Assign the domains
 
-For each resource (backend and frontend, both environments):
+For each resource (backend and frontend in all three environments):
 
 1. Open the resource → **Domains / FQDN** field.
 2. Enter the full `https://...` URL, e.g. for production frontend
@@ -473,10 +488,9 @@ A mismatch here is the most common cause of "works in curl, fails in browser".
 
 ## 10. Set up deploy webhooks for GitHub Actions
 
-CI/CD (the project's "Phase 5") builds and pushes images to GHCR, then tells
-Coolify to pull and redeploy by calling a **deploy webhook**. The workflow calls
-**one webhook URL per GitHub Environment** (`staging` on `develop`, `production`
-on `main`).
+CI/CD builds each accepted `main` commit once, deploys it automatically to QA,
+then promotes the same image digests to staging/production. Every environment
+needs separate backend and frontend webhooks.
 
 ### 10.1 Find the webhook URL and API token in Coolify
 
@@ -505,38 +519,37 @@ curl.exe -X GET "https://<coolify-host>/api/v1/deploy?uuid=<resource-uuid>&force
 
 ### 10.2 Create GitHub Environments and secrets
 
-The deploy job in `.github/workflows/ci-cd.yml` targets GitHub Environments
-named **`staging`** (branch `develop`) and **`production`** (branch `main`). If
-these environments do not exist yet, create them first:
+The workflows target GitHub Environments named **`qa`**, **`staging`**, and
+**`production`**. If these environments do not exist yet, create them first:
 
 1. GitHub repo → **Settings → Environments → New environment**
-2. Create **`staging`**, then repeat for **`production`**
-3. (Optional) On `production`, add **Required reviewers** to gate deploys behind
-   manual approval.
+2. Create **`qa`**, **`staging`**, and **`production`**
+3. Leave QA automatic. Add **Required reviewers** to staging and production,
+   enable **Prevent self-review**, and restrict deployments to `main`/release
+   tags as appropriate.
 
 Add these **Actions secrets** (repo → **Settings → Secrets and variables →
 Actions**). Per-environment webhook URLs should be stored on the matching
-environment; the API token can be repo-wide or duplicated on both environments:
+environment; the API token can be repo-wide or duplicated on all three
+environments:
 
 | Secret name                    | Where to add it in GitHub UI                         | Value |
 | ------------------------------ | ---------------------------------------------------- | ----- |
-| `COOLIFY_STAGING_WEBHOOK`      | Environment **`staging`** → Environment secrets      | Full deploy webhook URL for a **staging** resource (see note below). |
-| `COOLIFY_PRODUCTION_WEBHOOK`   | Environment **`production`** → Environment secrets   | Full deploy webhook URL for a **production** resource. |
+| `COOLIFY_QA_BACKEND_WEBHOOK`   | Environment **`qa`** → Environment secrets           | QA backend webhook URL. |
+| `COOLIFY_QA_FRONTEND_WEBHOOK`  | Environment **`qa`** → Environment secrets           | QA frontend webhook URL. |
+| `COOLIFY_STAGING_BACKEND_WEBHOOK` | Environment **`staging`** → Environment secrets   | Staging backend webhook URL. |
+| `COOLIFY_STAGING_FRONTEND_WEBHOOK` | Environment **`staging`** → Environment secrets  | Staging frontend webhook URL. |
+| `COOLIFY_PRODUCTION_BACKEND_WEBHOOK` | Environment **`production`** → Environment secrets | Production backend webhook URL. |
+| `COOLIFY_PRODUCTION_FRONTEND_WEBHOOK` | Environment **`production`** → Environment secrets | Production frontend webhook URL. |
 | `COOLIFY_TOKEN`                | Repository secrets (or both environments)            | Coolify API token (Bearer). One token can cover all webhooks. |
 
 Repository-level secrets also work for the webhook URLs, but environment-scoped
 secrets are recommended so staging and production stay isolated.
 
-After a push to `develop`, the workflow `GET`s `COOLIFY_STAGING_WEBHOOK` with
-`COOLIFY_TOKEN`. If the staging webhook secret is missing or empty, the deploy
-job fails with: **`Deploy webhook secret is not set for this environment.`**
-
-> **Backend + frontend:** each Coolify resource has its own webhook UUID. The
-> workflow calls **one** URL per environment. For initial setup, point
-> `COOLIFY_STAGING_WEBHOOK` at the **staging backend** resource (it self-migrates
-> on boot). After CI deploys the backend, manually **Redeploy** the staging
-> frontend in Coolify (or extend the workflow later to call both webhooks). Use
-> the production backend webhook URL for `COOLIFY_PRODUCTION_WEBHOOK`.
+Add `QA_API_URL` and `QA_FRONTEND_URL` as QA environment variables, and the
+corresponding `STAGING_*` and `PRODUCTION_*` URL variables in those environments.
+The workflow deploys the backend first, waits for `/health`, then deploys the
+frontend and runs non-mutating smoke checks.
 
 ---
 
@@ -591,7 +604,8 @@ Run the same smoke test against staging before treating production as good.
 ## 12. Scheduled off-site Postgres backups
 
 Coolify has a built-in scheduled backup feature for its managed databases. Use it
-for both environments (production is essential; staging is nice-to-have).
+for all three environments (production is essential; staging and QA are
+recommended).
 
 ### 12.1 Configure backups in Coolify
 
@@ -665,8 +679,8 @@ logs):
 - `SameSite=Strict` requires same-site: frontend and backend must be sibling
   subdomains of the same base (`app.` and `api.` under the same
   `<ip-with-dashes>.sslip.io`). Unrelated hosts will drop the cookie.
-- Confirm `VITE_API_URL` in the built frontend points at the `https://api...`
-  host (this is baked at build time — rebuild in CI if wrong).
+- Confirm the frontend resource's runtime `API_URL` points at the correct
+  `https://api...` host, then redeploy/restart it to regenerate `/config.json`.
 
 **Migration errors** (backend crashes on boot, deploy fails):
 - Read the backend deploy logs. The entrypoint runs `node-pg-migrate up` before
@@ -693,28 +707,30 @@ CI/CD deploys cleanly.
 
 | GitHub Actions secret        | GitHub scope   | Where it comes from in Coolify                                  |
 | ---------------------------- | -------------- | --------------------------------------------------------------- |
-| `COOLIFY_STAGING_WEBHOOK`    | `staging` env  | Staging resource → Webhooks: full deploy webhook URL.            |
-| `COOLIFY_PRODUCTION_WEBHOOK` | `production` env | Production resource → Webhooks: full deploy webhook URL.      |
+| `COOLIFY_QA_BACKEND_WEBHOOK` / `COOLIFY_QA_FRONTEND_WEBHOOK` | `qa` env | Each QA resource → Webhooks. |
+| `COOLIFY_STAGING_BACKEND_WEBHOOK` / `COOLIFY_STAGING_FRONTEND_WEBHOOK` | `staging` env | Each staging resource → Webhooks. |
+| `COOLIFY_PRODUCTION_BACKEND_WEBHOOK` / `COOLIFY_PRODUCTION_FRONTEND_WEBHOOK` | `production` env | Each production resource → Webhooks. |
 | `COOLIFY_TOKEN`              | repo (or env)  | Coolify **Settings → API Tokens / Keys** (Bearer token).        |
 
-**Set in GitHub Actions (build variables), consumed by Coolify indirectly via the image:**
+**Set in GitHub Actions environment variables (used by health/smoke checks):**
 
-| GitHub Actions build value                    | Used for | Must equal |
-| --------------------------------------------- | -------- | ---------- |
-| `VITE_API_URL` (staging build arg)            | Frontend build for staging | `https://api-staging.<ip-with-dashes>.sslip.io` |
-| `VITE_API_URL` (production build arg)         | Frontend build for production | `https://api.<ip-with-dashes>.sslip.io` |
-| Image tags `staging` / `production`           | Which image Coolify pulls | Must match the tag configured on each Coolify resource (step 7). |
+| GitHub Actions value | Environment | Purpose |
+| -------------------- | ----------- | ------- |
+| `QA_API_URL`, `QA_FRONTEND_URL` | QA | Automatic post-deploy checks. |
+| `STAGING_API_URL`, `STAGING_FRONTEND_URL` | staging | Promotion checks. |
+| `PRODUCTION_API_URL`, `PRODUCTION_FRONTEND_URL` | production | Release checks. |
 
 **Set in Coolify (not in GitHub), per environment (step 7.1):**
 
-`NODE_ENV=production`, `PORT=4000`, `DATABASE_URL` (internal Postgres string),
+Backend: `NODE_ENV=production`, `PORT=4000`, `DATABASE_URL` (internal Postgres string),
 `CORS_ORIGIN` (that environment's frontend `https://` URL), `SESSION_SECRET`,
-`CSRF_SECRET`.
+`CSRF_SECRET`, and optional Flipt variables. Frontend: `API_URL` equal to that
+environment's backend HTTPS URL.
 
 **Provided by you to Coolify once (step 6):** the GitHub `read:packages` PAT as the
 `ghcr.io` registry credential.
 
 Consistency rules to double-check:
-- The Coolify frontend domain == the `VITE_API_URL`'s sibling (`app.` vs `api.`).
+- The Coolify frontend `API_URL` points to the sibling backend domain.
 - The backend `CORS_ORIGIN` == the frontend `https://` domain, exactly.
 - The Coolify resource image **tag** == the tag CI pushes for that environment.

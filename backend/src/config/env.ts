@@ -29,6 +29,16 @@ const envSchema = z.object({
   CSRF_SECRET: z
     .string()
     .min(32, "CSRF_SECRET must be at least 32 characters"),
+  APP_VERSION: z.string().min(1).default("development"),
+  GIT_SHA: z.string().min(1).default("unknown"),
+  BUILD_TIME: z.string().min(1).default("unknown"),
+  FLIPT_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  FLIPT_URL: z.string().url().default("http://localhost:8080"),
+  FLIPT_NAMESPACE: z.string().min(1).default("auth-system"),
+  FLIPT_TOKEN: z.string().min(1).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -1,13 +1,13 @@
 name: CodeQL
 
 # Static analysis for JavaScript/TypeScript across both packages (backend +
-# frontend). Runs on push/PR to the long-lived branches and on a weekly schedule
+# frontend). Runs on push/PR to main and on a weekly schedule
 # so newly disclosed query patterns catch previously-committed code.
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   schedule:
     - cron: "27 3 * * 1"
 
