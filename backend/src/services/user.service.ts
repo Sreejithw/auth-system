@@ -52,6 +52,16 @@ export async function findByEmail(email: string): Promise<UserRecord | null> {
   return rows[0] ?? null;
 }
 
+export async function findById(id: string): Promise<UserRecord | null> {
+  const { rows } = await pool.query<UserRecord>(
+    `SELECT id, email, password_hash, failed_login_attempts, locked_until
+     FROM users
+     WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
 export async function findPublicById(id: string): Promise<PublicUser | null> {
   const { rows } = await pool.query<PublicUser>(
     `SELECT id, email FROM users WHERE id = $1`,

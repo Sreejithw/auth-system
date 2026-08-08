@@ -9,7 +9,8 @@ advanced items are captured in the roadmap below.
 
 Deployment promotion is documented in [`.github/README.md`](.github/README.md),
 Coolify provisioning in [`COOLIFY_SETUP.md`](COOLIFY_SETUP.md), and flag
-operations in [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md).
+operations in [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md). MFA enrollment, recovery,
+operational limits, and incident response are in [`MFA.md`](MFA.md).
 
 ## Architecture
 
@@ -29,7 +30,9 @@ flowchart LR
 - **Register** — validate input (email + strong password) → hash with Argon2id
   → insert user. Registration does not create a session; the user then logs in.
 - **Login** — look up user → verify hash → **regenerate the session id** (anti
-  fixation) → bind `userId` to the fresh session → set the `sid` cookie.
+  fixation) → bind `userId` to the fresh session → set the `sid` cookie. For an
+  MFA-enrolled user, login instead creates a 10-minute MFA challenge; only a
+  valid TOTP or recovery code completes authentication.
 - **Protected routes** — `requireAuth` checks `req.session.userId`.
 - **Logout** — destroy the session server-side and clear the cookie.
 
@@ -141,6 +144,8 @@ npm start
 | `DATABASE_URL`   | Postgres connection string; must match the compose credentials.|
 | `SESSION_SECRET` | Session signing secret, **min 32 chars**.                      |
 | `CSRF_SECRET`    | CSRF HMAC secret, **min 32 chars**.                            |
+| `MFA_ENCRYPTION_KEY` | AES-256-GCM key for stored TOTP seeds. Required in production; use a distinct, randomly generated **64-hex-character** value per environment. |
+| `MFA_ISSUER`     | Label shown in authenticator apps (default `Auth System`).      |
 | `FLIPT_ENABLED`  | Enables remote flag evaluation; defaults to `false`.           |
 | `FLIPT_URL`      | Internal Flipt endpoint.                                       |
 | `FLIPT_NAMESPACE`| Environment-isolated flag namespace.                           |
@@ -186,9 +191,15 @@ Mutating requests (`POST`) must include a valid CSRF token in the
 | `GET /api/csrf-token`    | none | —                       | `200 {csrfToken}` | Sets the CSRF cookie and returns the token in the body. |
 | `GET /api/flags`         | optional | —                    | `200 {flags}` | Returns only allowlisted, server-evaluated client flags. |
 | `POST /api/auth/register`| none | `{ email, password }`   | `201 {message}`   | Generic response whether or not the email already exists (no enumeration). |
-| `POST /api/auth/login`   | none | `{ email, password }`   | `200 {user}`      | Sets the `sid` session cookie; regenerates the session id. |
+| `POST /api/auth/login`   | none | `{ email, password }`   | `200 {user}` or `{mfaRequired:true}` | Sets the `sid` session cookie; MFA users must call `/mfa/verify` before receiving an authenticated session. |
 | `GET /api/auth/me`       | yes  | —                       | `200 {user}`      | `401` when unauthenticated. |
 | `POST /api/auth/logout`  | yes* | —                       | `200 {message}`   | Destroys the session and clears the cookie. |
+| `GET /api/auth/mfa` | yes | — | `200 {enabled}` | Returns the authenticated user's MFA status. |
+| `POST /api/auth/mfa/setup` | yes† | — | `200 {provisioningUri,manualSecret}` | Starts a session-bound enrollment; secret is not activated until confirmed. |
+| `POST /api/auth/mfa/enable` | yes† | `{totpCode}` | `200 {recoveryCodes}` | Confirms enrollment and displays 10 one-time recovery codes. |
+| `POST /api/auth/mfa/disable` | yes | `{password, totpCode}` or `{password, recoveryCode}` | `200 {message}` | Requires the password and exactly one current proof. |
+| `POST /api/auth/mfa/recovery-codes/regenerate` | yes | `{password, totpCode}` or `{password, recoveryCode}` | `200 {recoveryCodes}` | Invalidates all previously issued recovery codes. |
+| `POST /api/auth/mfa/verify` | challenge | `{totpCode}` or `{recoveryCode}` | `200 {user}` | Completes the short-lived MFA login challenge. |
 
 Common error responses: `400` (validation), `401` (`Invalid email or
 password`, generic), `403` (`Invalid CSRF token`), `413` (payload too large),
@@ -196,6 +207,25 @@ password`, generic), `403` (`Invalid CSRF token`), `413` (payload too large),
 
 \* Logout still requires a valid CSRF token; it is safe to call without an
 active session.
+
+\† Setup and enable additionally require a login authenticated in the preceding
+10 minutes. All mutating MFA calls require CSRF and cookies.
+
+### MFA protocol and limits
+
+MFA is optional per user and uses standard time-based one-time passwords:
+**TOTP SHA-1, 6 digits, 30-second period**, accepting one 30-second step of
+clock drift on either side. A successful TOTP time step cannot be replayed.
+The app offers a provisioning URI for QR import and a `manualSecret` for manual
+authenticator setup. Recovery codes are high-entropy, single-use values; save
+them offline when they are shown because plaintext codes are never retrievable.
+
+There are no trusted devices, remembered browsers, or MFA bypass cookies. A
+successful code is required on every new password-login challenge. MFA endpoints
+share a stricter per-IP limiter of **5 failed requests per 15 minutes**; the
+global limiter is 300 requests per 15 minutes. Password login/register have a
+separate 10-failed-requests-per-15-minutes per-IP limit, plus the five-failure,
+15-minute account lockout.
 
 ## Security
 
@@ -221,6 +251,12 @@ active session.
   `express-rate-limit` caps request volume (global + a tighter limit on
   credential endpoints); `failed_login_attempts` + `locked_until` (5 attempts →
   15-minute lockout) slow targeted guessing at the account level.
+- **Optional TOTP MFA with encrypted seeds and single-use recovery codes** —
+  *Threat:* password compromise. *Justification:* a password alone cannot
+  finish login for an enrolled user; seeds are AES-256-GCM encrypted at rest,
+  recovery codes are Argon2id-hashed, TOTP steps cannot be replayed, and MFA
+  verification has a tighter rate limit. MFA deliberately has no trusted-device
+  bypass. See [`MFA.md`](MFA.md) for operational constraints.
 - **Input validation with zod** — *Threat:* injection, malformed/oversized
   input, mass-assignment. *Justification:* strict (`.strict()`) schemas reject
   unknown fields and bad data at the edge; only whitelisted fields reach
@@ -265,7 +301,6 @@ future work:
 
 - Email verification.
 - Password reset flow.
-- MFA / TOTP.
 - WebAuthn / passkeys.
 - Breached-password check via HIBP k-anonymity.
 - RBAC / fine-grained authorization.
@@ -281,6 +316,7 @@ auth-system/
   docker-compose.yml            # local Postgres service
   DEPLOY.md                     # container build + deploy + migration guide
   FEATURE_FLAGS.md              # OpenFeature/Flipt operations and lifecycle
+  MFA.md                        # TOTP enrollment, recovery, and operations
   VERSION                       # base SemVer for automatic QA build versions
   .gitignore  .gitattributes
   README.md
@@ -302,6 +338,7 @@ auth-system/
         requireAuth.ts          # protected-route guard
         errorHandler.ts         # 404 + centralized error handling
       routes/auth.ts            # register / login / logout / me
+      routes/mfa.ts             # MFA status, enrollment, recovery, login proof
       routes/flags.ts           # allowlisted client-safe flag evaluations
       services/user.service.ts  # parameterized user queries + lockout
       utils/

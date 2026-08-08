@@ -4,11 +4,16 @@ import { env, isProduction } from "./config/env.js";
 import { logger } from "./utils/logger.js";
 import { assertDbConnection } from "./db/pool.js";
 import { securityHeaders, corsMiddleware } from "./middleware/security.js";
-import { globalLimiter, authLimiter } from "./middleware/rateLimit.js";
+import {
+  globalLimiter,
+  authLimiter,
+  mfaLimiter,
+} from "./middleware/rateLimit.js";
 import { sessionMiddleware } from "./middleware/session.js";
 import { doubleCsrfProtection, generateCsrfToken } from "./middleware/csrf.js";
 import { notFoundHandler, errorHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.js";
+import { mfaRouter } from "./routes/mfa.js";
 import { flagsRouter } from "./routes/flags.js";
 import {
   initializeFeatureFlags,
@@ -74,8 +79,10 @@ app.use(doubleCsrfProtection);
 // Tighter rate limit specifically on credential endpoints.
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/mfa", mfaLimiter);
 
 app.use("/api/auth", authRouter);
+app.use("/api/auth/mfa", mfaRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
