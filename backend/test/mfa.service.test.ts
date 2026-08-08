@@ -8,8 +8,8 @@ process.env.CORS_ORIGIN = "http://localhost:5173";
 process.env.DATABASE_URL = "postgres://unused:unused@localhost:5432/unused";
 process.env.SESSION_SECRET = "test-session-secret-that-is-at-least-32-chars";
 process.env.CSRF_SECRET = "test-csrf-secret-that-is-at-least-32-characters";
-process.env.MFA_ENCRYPTION_KEY =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+// Deterministic test-only key; construct it to avoid resembling a committed credential.
+process.env.MFA_ENCRYPTION_KEY = Buffer.alloc(32, 0x42).toString("hex");
 
 let MfaService: (new (database: never) => {
   createSetup(): {

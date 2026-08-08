@@ -17,7 +17,9 @@ env:
   REGISTRY: ghcr.io
   BACKEND_IMAGE: ghcr.io/sreejithw/auth-system-backend
   FRONTEND_IMAGE: ghcr.io/sreejithw/auth-system-frontend
-  NODE_VERSION: "24"
+  # Keep npm's lockfile interpretation stable; 24.x otherwise floats to a
+  # newer bundled npm release on every CI run.
+  NODE_VERSION: "24.11.1"
 
 jobs:
   backend:
