@@ -9,6 +9,11 @@ import { sessionMiddleware } from "./middleware/session.js";
 import { doubleCsrfProtection, generateCsrfToken } from "./middleware/csrf.js";
 import { notFoundHandler, errorHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.js";
+import { flagsRouter } from "./routes/flags.js";
+import {
+  initializeFeatureFlags,
+  shutdownFeatureFlags,
+} from "./flags/service.js";
 
 const app = express();
 
@@ -34,8 +39,17 @@ app.use(cookieParser());
 // session id (see middleware/csrf.ts), so the session must be available first.
 app.use(sessionMiddleware);
 
+// Browser-safe flags are evaluated after session targeting is available and
+// before CSRF protection. The router exposes only its explicit allowlist.
+app.use("/api/flags", flagsRouter);
+
 app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({ status: "ok" });
+  res.status(200).json({
+    status: "ok",
+    version: env.APP_VERSION,
+    gitSha: env.GIT_SHA,
+    buildTime: env.BUILD_TIME,
+  });
 });
 
 // CSRF bootstrap: issues a token + cookie. Marking the session dirty forces the
@@ -67,12 +81,21 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 async function start(): Promise<void> {
+  // Initialization is deliberately non-blocking: auth remains available even
+  // if Flipt is unreachable or misconfigured.
+  void initializeFeatureFlags();
   await assertDbConnection();
   app.listen(env.PORT, () => {
     logger.info(
       { port: env.PORT, env: env.NODE_ENV, corsOrigin: env.CORS_ORIGIN },
       "Auth backend listening",
     );
+  });
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    void shutdownFeatureFlags().finally(() => process.exit(0));
   });
 }
 

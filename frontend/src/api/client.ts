@@ -1,4 +1,5 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+import { getRuntimeConfig } from '../config/runtimeConfig';
+import type { ClientFlags } from '../flags/definitions';
 
 export interface ApiUser {
   id: string;
@@ -22,7 +23,7 @@ export class ApiError extends Error {
 let csrfToken: string | null = null;
 
 async function fetchCsrfToken(): Promise<string> {
-  const res = await fetch(`${API_URL}/api/csrf-token`, {
+  const res = await fetch(`${getRuntimeConfig().apiUrl}/api/csrf-token`, {
     credentials: 'include',
   });
   if (!res.ok) {
@@ -72,7 +73,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   const doFetch = () =>
-    fetch(`${API_URL}${path}`, {
+    fetch(`${getRuntimeConfig().apiUrl}${path}`, {
       method,
       credentials: 'include',
       headers,
@@ -101,11 +102,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  flags(): Promise<{ flags: ClientFlags }> {
+    return request<{ flags: ClientFlags }>('/api/flags');
+  },
   me(): Promise<{ user: ApiUser }> {
     return request<{ user: ApiUser }>('/api/auth/me');
   },
-  register(email: string, password: string): Promise<{ user: ApiUser }> {
-    return request<{ user: ApiUser }>('/api/auth/register', {
+  register(email: string, password: string): Promise<{ message: string }> {
+    return request<{ message: string }>('/api/auth/register', {
       method: 'POST',
       body: { email, password },
     });

@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import zxcvbn from 'zxcvbn';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../api/client';
+import { useFlag } from '../flags/FlagContext';
 
 const MIN_PASSWORD_LENGTH = 12;
 const MAX_PASSWORD_LENGTH = 128;
@@ -21,6 +22,7 @@ function isPasswordBackendError(message: string): boolean {
 export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
+  const showNewRegistrationFlow = useFlag('new-registration-flow');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -73,7 +75,7 @@ export default function Register() {
     setSubmitting(true);
     try {
       await register(email.trim(), password);
-      navigate('/dashboard', { replace: true });
+      navigate('/login', { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
         const message = err.message || 'Could not create your account.';
@@ -97,6 +99,11 @@ export default function Register() {
       <form className="auth-card" onSubmit={handleSubmit} noValidate>
         <h1 className="auth-title">Create account</h1>
         <p className="auth-subtitle">Start with a secure password</p>
+        {showNewRegistrationFlow && (
+          <p className="auth-subtitle">
+            Preview: streamlined onboarding is enabled for your rollout group.
+          </p>
+        )}
 
         {formError && <div className="alert alert-error" role="alert">{formError}</div>}
 

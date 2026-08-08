@@ -26,7 +26,16 @@ RUN npm run build
 
 # ---- Stage 2: runtime (prod-only deps) ----
 FROM node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production
+ARG APP_VERSION=development
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV NODE_ENV=production \
+    APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
+LABEL org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
 WORKDIR /app
 
 # curl is used by the HEALTHCHECK below.
@@ -37,7 +46,10 @@ RUN apt-get update \
 # Install production dependencies only. argon2 pulls its glibc prebuilt binary
 # here, so no compiler toolchain is needed.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# npm ci needs the CLI; drop npm afterward so Trivy does not flag its bundled
+# undici (CVE-2026-12151) — the runtime only executes node, not npm.
+RUN npm ci --omit=dev \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Application artifacts: compiled server, migrations, and the entrypoint.
 COPY --from=builder /app/dist ./dist

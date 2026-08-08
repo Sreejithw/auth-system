@@ -10,5 +10,7 @@ declare module "express-session" {
      * token is bound to — stays stable through the subsequent mutating request.
      */
     csrfBootstrapped?: boolean;
+    /** Stable server-generated identifier used for anonymous flag targeting. */
+    flagAnonymousId?: string;
   }
 }

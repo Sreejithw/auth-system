@@ -7,6 +7,10 @@ Postgres and delivered via an `httpOnly`, `SameSite=Strict` cookie (also
 `Secure` in production). Security controls are implemented up front; more
 advanced items are captured in the roadmap below.
 
+Deployment promotion is documented in [`.github/README.md`](.github/README.md),
+Coolify provisioning in [`COOLIFY_SETUP.md`](COOLIFY_SETUP.md), and flag
+operations in [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md).
+
 ## Architecture
 
 ```mermaid
@@ -14,6 +18,7 @@ flowchart LR
   Browser["React SPA (Vite + TS)"] -->|"fetch, credentials: include"| API["Express API"]
   API -->|"parameterized queries (pg)"| DB[("PostgreSQL")]
   API -->|"session store (connect-pg-simple)"| DB
+  API -->|"OpenFeature evaluation"| Flipt["Flipt feature flags"]
   subgraph controls [Backend middleware chain]
     Helmet --> CORS --> RateLimit --> BodyParse --> Session --> CSRF --> Routes
   end
@@ -46,6 +51,9 @@ middleware runs before CSRF** in the chain.
 - **helmet** (security headers), **express-rate-limit**, **csrf-csrf**
   (double-submit CSRF), **cors** (strict allowlist).
 - **pino** for structured, redacted logging.
+- **OpenFeature** with a server-side **Flipt** provider for release flags,
+  operational kill switches, and targeted rollouts. Code defaults keep auth
+  available when the flag service is disabled or unreachable.
 
 ### Frontend
 - **Vite + React 19 + TypeScript**, **react-router-dom**.
@@ -54,6 +62,10 @@ middleware runs before CSRF** in the chain.
   header on mutations (with a one-shot refresh-and-retry on a 403).
 - `AuthContext` holds the current user (via `GET /api/auth/me`);
   `ProtectedRoute` guards `/dashboard`.
+- Production loads `/config.json`, generated from runtime `API_URL`, so one
+  immutable frontend image can be promoted through QA, staging, and production.
+- `FlagContext` consumes only backend-evaluated, client-safe flags. Flipt
+  credentials and authoritative flags never enter the browser.
 - Minimal, clean UI: Login, Register, Dashboard (shows the user + logout).
 
 ## Prerequisites
@@ -75,7 +87,8 @@ From the repository root:
 docker compose up -d
 ```
 
-This starts `postgres:16-alpine` on `localhost:5432`. Default credentials
+This starts `postgres:16-alpine` on `localhost:5432` and a persistent local
+Flipt feature-flag service. Default database credentials
 (overridable via env) are user `authuser`, password `authpass`, database
 `authdb`.
 
@@ -128,6 +141,10 @@ npm start
 | `DATABASE_URL`   | Postgres connection string; must match the compose credentials.|
 | `SESSION_SECRET` | Session signing secret, **min 32 chars**.                      |
 | `CSRF_SECRET`    | CSRF HMAC secret, **min 32 chars**.                            |
+| `FLIPT_ENABLED`  | Enables remote flag evaluation; defaults to `false`.           |
+| `FLIPT_URL`      | Internal Flipt endpoint.                                       |
+| `FLIPT_NAMESPACE`| Environment-isolated flag namespace.                           |
+| `FLIPT_TOKEN`    | Optional server-only Flipt client token.                       |
 
 The env loader is zod-validated and **fails fast** at boot if anything is
 missing or malformed. Generate strong secrets, for example:
@@ -147,8 +164,9 @@ npm install
 npm run dev
 ```
 
-Vite serves the app on `http://localhost:5173`. The only variable is
-`VITE_API_URL` (default `http://localhost:4000`), the base URL of the backend.
+Vite serves the app on `http://localhost:5173`. `VITE_API_URL` is a local
+fallback. Production containers instead require runtime `API_URL` and generate
+an uncached `/config.json` before nginx starts.
 
 To produce a production build:
 
@@ -164,8 +182,9 @@ Mutating requests (`POST`) must include a valid CSRF token in the
 
 | Method & path            | Auth | Body                    | Success           | Notes |
 | ------------------------ | ---- | ----------------------- | ----------------- | ----- |
-| `GET /health`            | none | —                       | `200 {status:"ok"}` | Liveness check. |
+| `GET /health`            | none | —                       | `200 {status,version,gitSha,buildTime}` | Liveness and build identity. |
 | `GET /api/csrf-token`    | none | —                       | `200 {csrfToken}` | Sets the CSRF cookie and returns the token in the body. |
+| `GET /api/flags`         | optional | —                    | `200 {flags}` | Returns only allowlisted, server-evaluated client flags. |
 | `POST /api/auth/register`| none | `{ email, password }`   | `201 {message}`   | Generic response whether or not the email already exists (no enumeration). |
 | `POST /api/auth/login`   | none | `{ email, password }`   | `200 {user}`      | Sets the `sid` session cookie; regenerates the session id. |
 | `GET /api/auth/me`       | yes  | —                       | `200 {user}`      | `401` when unauthenticated. |
@@ -251,7 +270,7 @@ future work:
 - Breached-password check via HIBP k-anonymity.
 - RBAC / fine-grained authorization.
 - Redis session store for horizontal scale.
-- Dependency scanning (`npm audit` / Dependabot) + CI.
+- Signed container provenance and admission-time signature verification.
 - Secret rotation.
 - WAF / reverse-proxy TLS termination.
 
@@ -261,6 +280,8 @@ future work:
 auth-system/
   docker-compose.yml            # local Postgres service
   DEPLOY.md                     # container build + deploy + migration guide
+  FEATURE_FLAGS.md              # OpenFeature/Flipt operations and lifecycle
+  VERSION                       # base SemVer for automatic QA build versions
   .gitignore  .gitattributes
   README.md
   backend/
@@ -270,6 +291,7 @@ auth-system/
     src/
       index.ts                  # app bootstrap + middleware chain
       config/env.ts             # zod-validated env loader
+      flags/                    # definitions, targeting, OpenFeature provider
       db/pool.ts                # pg Pool + connection check
       db/schema.sql             # users + session tables
       middleware/
@@ -280,6 +302,7 @@ auth-system/
         requireAuth.ts          # protected-route guard
         errorHandler.ts         # 404 + centralized error handling
       routes/auth.ts            # register / login / logout / me
+      routes/flags.ts           # allowlisted client-safe flag evaluations
       services/user.service.ts  # parameterized user queries + lockout
       utils/
         password.ts             # Argon2id hash/verify
@@ -292,6 +315,8 @@ auth-system/
       main.tsx  App.tsx
       api/client.ts             # fetch wrapper (credentials + CSRF)
       auth/AuthContext.tsx      # current-user context
+      config/runtimeConfig.ts   # environment-neutral runtime API config
+      flags/                    # safe defaults + React flag context
       pages/{Login,Register,Dashboard}.tsx
       components/ProtectedRoute.tsx
 ```

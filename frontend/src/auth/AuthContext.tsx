@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { ReactNode } from 'react';
 import { api, ApiError, clearCsrfToken } from '../api/client';
 import type { ApiUser } from '../api/client';
+import { FlagProvider } from '../flags/FlagContext';
 
 interface AuthContextValue {
   user: ApiUser | null;
@@ -50,10 +51,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const register = useCallback(async (email: string, password: string) => {
-    const res = await api.register(email, password);
-    setUser(res.user ?? null);
-    if (!res.user) await refresh();
-  }, [refresh]);
+    await api.register(email, password);
+    setUser(null);
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -69,7 +69,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user, loading, login, register, logout],
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      <FlagProvider authLoading={loading} userId={user?.id ?? null}>
+        {children}
+      </FlagProvider>
+    </AuthContext.Provider>
+  );
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

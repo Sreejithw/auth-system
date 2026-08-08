@@ -3,7 +3,7 @@ node_modules
 dist
 build
 
-# Local env — VITE_API_URL is supplied as a --build-arg instead.
+# Local env — production API_URL is supplied to the running container.
 .env
 .env.*
 !.env.example

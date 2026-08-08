@@ -1,0 +1,369 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Environment to promote the existing QA images into
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      git_sha:
+        description: Full 40-character Git SHA used by both source images
+        required: true
+        type: string
+      release_version:
+        description: SemVer X.Y.Z (required only for production)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/sreejithw/auth-system-backend
+  FRONTEND_IMAGE: ghcr.io/sreejithw/auth-system-frontend
+
+jobs:
+  promote:
+    name: Promote to ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    concurrency:
+      # Staging and production share mutable deployment pointers. Serialize all
+      # promotions so staging cannot change between the production gate and tag.
+      group: promote-artifacts
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate promotion inputs
+        id: inputs
+        env:
+          INPUT_SHA: ${{ inputs.git_sha }}
+          INPUT_VERSION: ${{ inputs.release_version }}
+          TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          git_sha="$(printf '%s' "$INPUT_SHA" | tr '[:upper:]' '[:lower:]')"
+          release_version="$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')"
+          if [[ ! "$git_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::git_sha must be a full 40-character hexadecimal SHA."
+            exit 1
+          fi
+          if [[ "$TARGET" == "production" ]]; then
+            if [[ ! "$release_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "::error::Production release_version must be formal SemVer X.Y.Z without leading zeroes."
+              exit 1
+            fi
+          elif [[ -n "$release_version" ]]; then
+            echo "::error::release_version is accepted only for production promotions."
+            exit 1
+          fi
+          echo "git_sha=$git_sha" >> "$GITHUB_OUTPUT"
+          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate deployment configuration
+        env:
+          BACKEND_WEBHOOK: ${{ secrets[inputs.target == 'staging' && 'COOLIFY_STAGING_BACKEND_WEBHOOK' || 'COOLIFY_PRODUCTION_BACKEND_WEBHOOK'] }}
+          FRONTEND_WEBHOOK: ${{ secrets[inputs.target == 'staging' && 'COOLIFY_STAGING_FRONTEND_WEBHOOK' || 'COOLIFY_PRODUCTION_FRONTEND_WEBHOOK'] }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          API_URL: ${{ vars[inputs.target == 'staging' && 'STAGING_API_URL' || 'PRODUCTION_API_URL'] }}
+          FRONTEND_URL: ${{ vars[inputs.target == 'staging' && 'STAGING_FRONTEND_URL' || 'PRODUCTION_FRONTEND_URL'] }}
+        shell: bash
+        run: |
+          for name in BACKEND_WEBHOOK FRONTEND_WEBHOOK COOLIFY_TOKEN API_URL FRONTEND_URL; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is not configured in the ${{ inputs.target }} environment."
+              exit 1
+            fi
+          done
+          node -e 'for (const n of ["API_URL","FRONTEND_URL"]) { const u = new URL(process.env[n]); if (!["http:","https:"].includes(u.protocol)) process.exit(1) }'
+
+      - name: Require a successful QA pipeline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_SHA: ${{ steps.inputs.outputs.git_sha }}
+        shell: bash
+        run: |
+          gh run list \
+            --workflow ci-cd.yml \
+            --commit "$GIT_SHA" \
+            --event push \
+            --limit 20 \
+            --json conclusion,headSha,databaseId > qa-runs.json
+          node <<'NODE'
+          const runs = require("./qa-runs.json");
+          const sha = process.env.GIT_SHA;
+          const successful = runs.find(
+            (run) => run.headSha === sha && run.conclusion === "success",
+          );
+          if (!successful) {
+            console.error(`::error::Commit ${sha} has no successful CI + QA deployment run.`);
+            process.exit(1);
+          }
+          console.log(`Using successful QA run ${successful.databaseId}.`);
+          NODE
+
+      - name: Verify source images and identity
+        id: source
+        env:
+          GIT_SHA: ${{ steps.inputs.outputs.git_sha }}
+        shell: bash
+        run: |
+          set -o pipefail
+          backend_ref="${BACKEND_IMAGE}:${GIT_SHA}"
+          frontend_ref="${FRONTEND_IMAGE}:${GIT_SHA}"
+
+          docker buildx imagetools inspect --raw "$backend_ref" > backend-manifest.json
+          docker buildx imagetools inspect --raw "$frontend_ref" > frontend-manifest.json
+          backend_digest="sha256:$(sha256sum backend-manifest.json | cut -d' ' -f1)"
+          frontend_digest="sha256:$(sha256sum frontend-manifest.json | cut -d' ' -f1)"
+
+          if [[ "${{ inputs.target }}" == "production" ]]; then
+            docker buildx imagetools inspect --raw "${BACKEND_IMAGE}:staging" > backend-staging.json
+            docker buildx imagetools inspect --raw "${FRONTEND_IMAGE}:staging" > frontend-staging.json
+            docker buildx imagetools inspect --raw "${BACKEND_IMAGE}:staging-${GIT_SHA}" > backend-staging-verified.json
+            docker buildx imagetools inspect --raw "${FRONTEND_IMAGE}:staging-${GIT_SHA}" > frontend-staging-verified.json
+            staging_backend_digest="sha256:$(sha256sum backend-staging.json | cut -d' ' -f1)"
+            staging_frontend_digest="sha256:$(sha256sum frontend-staging.json | cut -d' ' -f1)"
+            verified_backend_digest="sha256:$(sha256sum backend-staging-verified.json | cut -d' ' -f1)"
+            verified_frontend_digest="sha256:$(sha256sum frontend-staging-verified.json | cut -d' ' -f1)"
+            if [[ "$staging_backend_digest" != "$backend_digest" ||
+                  "$staging_frontend_digest" != "$frontend_digest" ||
+                  "$verified_backend_digest" != "$backend_digest" ||
+                  "$verified_frontend_digest" != "$frontend_digest" ]]; then
+              echo "::error::Production may only receive the exact build that completed staging smoke tests and is still current in staging."
+              exit 1
+            fi
+          fi
+
+          docker pull "${BACKEND_IMAGE}@${backend_digest}"
+          docker pull "${FRONTEND_IMAGE}@${frontend_digest}"
+          docker image inspect "${BACKEND_IMAGE}@${backend_digest}" --format '{{json .Config.Env}}' > backend-env.json
+          docker image inspect "${FRONTEND_IMAGE}@${frontend_digest}" --format '{{json .Config.Env}}' > frontend-env.json
+
+          node <<'NODE'
+          const fs = require("fs");
+          const expectedSha = process.env.GIT_SHA;
+          const readEnv = (path) => Object.fromEntries(
+            JSON.parse(fs.readFileSync(path, "utf8")).map((entry) => {
+              const index = entry.indexOf("=");
+              return [entry.slice(0, index), entry.slice(index + 1)];
+            }),
+          );
+          const backend = readEnv("backend-env.json");
+          const frontend = readEnv("frontend-env.json");
+          for (const [name, image] of [["backend", backend], ["frontend", frontend]]) {
+            if (image.GIT_SHA !== expectedSha) {
+              console.error(`::error::${name} image GIT_SHA is ${JSON.stringify(image.GIT_SHA)}, expected ${expectedSha}.`);
+              process.exit(1);
+            }
+            if (!image.APP_VERSION || image.APP_VERSION === "development") {
+              console.error(`::error::${name} image does not contain release build metadata.`);
+              process.exit(1);
+            }
+          }
+          if (backend.APP_VERSION !== frontend.APP_VERSION) {
+            console.error(`::error::Source image versions differ: backend=${backend.APP_VERSION}, frontend=${frontend.APP_VERSION}.`);
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `source_version=${backend.APP_VERSION}\n`);
+          NODE
+
+          echo "backend_digest=$backend_digest" >> "$GITHUB_OUTPUT"
+          echo "frontend_digest=$frontend_digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Verified promotion source"
+            echo "- Git SHA: \`$GIT_SHA\`"
+            echo "- Build version: \`$(node -p 'Object.fromEntries(JSON.parse(require("fs").readFileSync("backend-env.json","utf8")).map(x=>[x.slice(0,x.indexOf("=")),x.slice(x.indexOf("=")+1)])).APP_VERSION')\`"
+            echo "- Backend digest: \`$backend_digest\`"
+            echo "- Frontend digest: \`$frontend_digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reject an existing production version
+        if: inputs.target == 'production'
+        env:
+          RELEASE_VERSION: ${{ steps.inputs.outputs.release_version }}
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "${BACKEND_IMAGE}:${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Backend tag ${RELEASE_VERSION} already exists."
+            exit 1
+          fi
+          if docker buildx imagetools inspect "${FRONTEND_IMAGE}:${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Frontend tag ${RELEASE_VERSION} already exists."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "::error::Git tag v${RELEASE_VERSION} already exists."
+            exit 1
+          fi
+
+      - name: Retag source manifests without rebuilding
+        env:
+          TARGET: ${{ inputs.target }}
+          RELEASE_VERSION: ${{ steps.inputs.outputs.release_version }}
+          BACKEND_DIGEST: ${{ steps.source.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ steps.source.outputs.frontend_digest }}
+        shell: bash
+        run: |
+          if [[ "$TARGET" == "staging" ]]; then
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${BACKEND_IMAGE}:staging" \
+              "${BACKEND_IMAGE}@${BACKEND_DIGEST}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${FRONTEND_IMAGE}:staging" \
+              "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
+          else
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${BACKEND_IMAGE}:${RELEASE_VERSION}" \
+              --tag "${BACKEND_IMAGE}:production" \
+              --tag "${BACKEND_IMAGE}:latest" \
+              "${BACKEND_IMAGE}@${BACKEND_DIGEST}"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${FRONTEND_IMAGE}:${RELEASE_VERSION}" \
+              --tag "${FRONTEND_IMAGE}:production" \
+              --tag "${FRONTEND_IMAGE}:latest" \
+              "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
+          fi
+
+      - name: Verify promoted digests
+        env:
+          TARGET: ${{ inputs.target }}
+          RELEASE_VERSION: ${{ steps.inputs.outputs.release_version }}
+          BACKEND_DIGEST: ${{ steps.source.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ steps.source.outputs.frontend_digest }}
+        shell: bash
+        run: |
+          verify_tag() {
+            local ref="$1" expected="$2" file="$3" actual
+            docker buildx imagetools inspect --raw "$ref" > "$file"
+            actual="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$ref resolved to $actual instead of source digest $expected."
+              exit 1
+            fi
+          }
+          if [[ "$TARGET" == "staging" ]]; then
+            verify_tag "${BACKEND_IMAGE}:staging" "$BACKEND_DIGEST" backend-target.json
+            verify_tag "${FRONTEND_IMAGE}:staging" "$FRONTEND_DIGEST" frontend-target.json
+          else
+            for tag in "$RELEASE_VERSION" production latest; do
+              verify_tag "${BACKEND_IMAGE}:${tag}" "$BACKEND_DIGEST" "backend-${tag}.json"
+              verify_tag "${FRONTEND_IMAGE}:${tag}" "$FRONTEND_DIGEST" "frontend-${tag}.json"
+            done
+          fi
+
+      - name: Deploy backend
+        env:
+          WEBHOOK: ${{ secrets[inputs.target == 'staging' && 'COOLIFY_STAGING_BACKEND_WEBHOOK' || 'COOLIFY_PRODUCTION_BACKEND_WEBHOOK'] }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: >-
+          curl --fail --silent --show-error --retry 3 --output /dev/null -X GET
+          "$WEBHOOK" -H "Authorization: Bearer $COOLIFY_TOKEN"
+
+      - name: Wait for backend version
+        env:
+          API_URL: ${{ vars[inputs.target == 'staging' && 'STAGING_API_URL' || 'PRODUCTION_API_URL'] }}
+          EXPECTED_VERSION: ${{ steps.source.outputs.source_version }}
+          EXPECTED_SHA: ${{ steps.inputs.outputs.git_sha }}
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --max-time 20 "${API_URL%/}/health" > health.json &&
+              node -e 'const h=require("./health.json"); process.exit(h.status==="ok" && h.version===process.env.EXPECTED_VERSION && h.gitSha===process.env.EXPECTED_SHA ? 0 : 1)'; then
+              echo "Backend is serving the promoted image."
+              exit 0
+            fi
+            echo "Waiting for backend (attempt $attempt/30)..."
+            sleep 10
+          done
+          echo "::error::Backend did not serve the promoted image in time."
+          exit 1
+
+      - name: Deploy frontend
+        env:
+          WEBHOOK: ${{ secrets[inputs.target == 'staging' && 'COOLIFY_STAGING_FRONTEND_WEBHOOK' || 'COOLIFY_PRODUCTION_FRONTEND_WEBHOOK'] }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: >-
+          curl --fail --silent --show-error --retry 3 --output /dev/null -X GET
+          "$WEBHOOK" -H "Authorization: Bearer $COOLIFY_TOKEN"
+
+      - name: Smoke test promoted environment
+        env:
+          FRONTEND_URL: ${{ vars[inputs.target == 'staging' && 'STAGING_FRONTEND_URL' || 'PRODUCTION_FRONTEND_URL'] }}
+          API_URL: ${{ vars[inputs.target == 'staging' && 'STAGING_API_URL' || 'PRODUCTION_API_URL'] }}
+          EXPECTED_VERSION: ${{ steps.source.outputs.source_version }}
+          EXPECTED_SHA: ${{ steps.inputs.outputs.git_sha }}
+        run: bash .github/scripts/smoke-test.sh "$FRONTEND_URL" "$API_URL" "$API_URL" "$EXPECTED_VERSION" "$EXPECTED_SHA"
+
+      - name: Record verified staging digests
+        if: inputs.target == 'staging'
+        env:
+          GIT_SHA: ${{ steps.inputs.outputs.git_sha }}
+          BACKEND_DIGEST: ${{ steps.source.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ steps.source.outputs.frontend_digest }}
+        shell: bash
+        run: |
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${BACKEND_IMAGE}:staging-${GIT_SHA}" \
+            "${BACKEND_IMAGE}@${BACKEND_DIGEST}"
+          docker buildx imagetools create --prefer-index=false \
+            --tag "${FRONTEND_IMAGE}:staging-${GIT_SHA}" \
+            "${FRONTEND_IMAGE}@${FRONTEND_DIGEST}"
+
+      - name: Create GitHub Release
+        if: inputs.target == 'production'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.inputs.outputs.release_version }}
+          GIT_SHA: ${{ steps.inputs.outputs.git_sha }}
+          BACKEND_DIGEST: ${{ steps.source.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ steps.source.outputs.frontend_digest }}
+          SOURCE_VERSION: ${{ steps.source.outputs.source_version }}
+        shell: bash
+        run: |
+          gh release create "v${RELEASE_VERSION}" \
+            --target "$GIT_SHA" \
+            --title "v${RELEASE_VERSION}" \
+            --notes "$(cat <<EOF
+          Promoted build \`${SOURCE_VERSION}\` from commit \`${GIT_SHA}\`.
+
+          - Backend: \`${BACKEND_IMAGE}@${BACKEND_DIGEST}\`
+          - Frontend: \`${FRONTEND_IMAGE}@${FRONTEND_DIGEST}\`
+          EOF
+          )"
+
+      - name: Promotion summary
+        env:
+          TARGET: ${{ inputs.target }}
+          RELEASE_VERSION: ${{ steps.inputs.outputs.release_version }}
+        run: |
+          {
+            echo "### Promotion complete"
+            echo "- Target: \`$TARGET\`"
+            echo "- Source build: \`${{ steps.source.outputs.source_version }}\`"
+            echo "- Git SHA: \`${{ steps.inputs.outputs.git_sha }}\`"
+            echo "- Backend digest: \`${{ steps.source.outputs.backend_digest }}\`"
+            echo "- Frontend digest: \`${{ steps.source.outputs.frontend_digest }}\`"
+            if [[ -n "$RELEASE_VERSION" ]]; then
+              echo "- Release: \`v${RELEASE_VERSION}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -23,5 +23,16 @@ services:
       timeout: 5s
       retries: 10
 
+  flipt:
+    image: ghcr.io/flipt-io/flipt:v2.11.0
+    container_name: auth-system-flipt
+    restart: unless-stopped
+    ports:
+      # Local administration/evaluation only; do not publish this port in prod.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - fliptdata:/var/opt/flipt
+
 volumes:
   pgdata:
+  fliptdata:

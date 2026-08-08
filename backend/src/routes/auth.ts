@@ -12,6 +12,8 @@ import {
 } from "../services/user.service.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { logger } from "../utils/logger.js";
+import { buildFlagContext } from "../flags/context.js";
+import { evaluateBooleanFlag } from "../flags/service.js";
 
 export const authRouter = Router();
 
@@ -46,6 +48,15 @@ async function saveSession(req: Request): Promise<void> {
 // POST /register
 // ---------------------------------------------------------------------------
 authRouter.post("/register", async (req: Request, res: Response) => {
+  const registrationEnabled = await evaluateBooleanFlag(
+    "registration-enabled",
+    buildFlagContext(req),
+  );
+  if (!registrationEnabled) {
+    res.status(503).json({ error: "Registration is temporarily unavailable" });
+    return;
+  }
+
   const parsed = credentialsSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: formatValidationError(parsed.error) });

@@ -1,0 +1,342 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/sreejithw/auth-system-backend
+  FRONTEND_IMAGE: ghcr.io/sreejithw/auth-system-frontend
+  NODE_VERSION: "24"
+
+jobs:
+  backend:
+    name: Backend CI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Test when configured
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "No backend test script found; skipping."
+          fi
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  frontend:
+    name: Frontend CI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+      - name: Test when configured
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "No frontend test script found; skipping."
+          fi
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  metadata:
+    name: Release metadata
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build_time: ${{ steps.meta.outputs.build_time }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute QA version
+        id: meta
+        shell: bash
+        run: |
+          base_version="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must use X.Y.Z syntax."
+            exit 1
+          fi
+          version="${base_version}-qa.${GITHUB_RUN_NUMBER}"
+          build_time="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_time=$build_time" >> "$GITHUB_OUTPUT"
+          {
+            echo "### QA build"
+            echo "- Version: \`$version\`"
+            echo "- Git SHA: \`$GITHUB_SHA\`"
+            echo "- Build time: \`$build_time\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-backend:
+    name: Build, scan, and publish backend
+    if: github.event_name == 'push'
+    needs: [backend, frontend, gitleaks, metadata]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Preserve immutable backend source tag
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "${BACKEND_IMAGE}:${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "::error::Backend source tag ${GITHUB_SHA} already exists; refusing to overwrite an immutable build."
+            exit 1
+          fi
+      - name: Build image locally
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:${{ needs.metadata.outputs.version }}
+            ${{ env.BACKEND_IMAGE }}:qa
+          build-args: |
+            APP_VERSION=${{ needs.metadata.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.metadata.outputs.build_time }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Push scanned image tags
+        shell: bash
+        run: |
+          docker push "${BACKEND_IMAGE}:${GITHUB_SHA}"
+          docker push "${BACKEND_IMAGE}:${{ needs.metadata.outputs.version }}"
+          docker push "${BACKEND_IMAGE}:qa"
+      - name: Record published digest
+        id: digest
+        shell: bash
+        run: |
+          docker buildx imagetools inspect --raw "${BACKEND_IMAGE}:${GITHUB_SHA}" > manifest.json
+          digest="sha256:$(sha256sum manifest.json | cut -d' ' -f1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Backend image"
+            echo "- Image: \`${BACKEND_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Version: \`${{ needs.metadata.outputs.version }}\`"
+            echo "- Digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-frontend:
+    name: Build, scan, and publish frontend
+    if: github.event_name == 'push'
+    needs: [backend, frontend, gitleaks, metadata]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Preserve immutable frontend source tag
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "${FRONTEND_IMAGE}:${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "::error::Frontend source tag ${GITHUB_SHA} already exists; refusing to overwrite an immutable build."
+            exit 1
+          fi
+      - name: Build image locally
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:${{ needs.metadata.outputs.version }}
+            ${{ env.FRONTEND_IMAGE }}:qa
+          build-args: |
+            APP_VERSION=${{ needs.metadata.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.metadata.outputs.build_time }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+      - name: Push scanned image tags
+        shell: bash
+        run: |
+          docker push "${FRONTEND_IMAGE}:${GITHUB_SHA}"
+          docker push "${FRONTEND_IMAGE}:${{ needs.metadata.outputs.version }}"
+          docker push "${FRONTEND_IMAGE}:qa"
+      - name: Record published digest
+        id: digest
+        shell: bash
+        run: |
+          docker buildx imagetools inspect --raw "${FRONTEND_IMAGE}:${GITHUB_SHA}" > manifest.json
+          digest="sha256:$(sha256sum manifest.json | cut -d' ' -f1)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Frontend image"
+            echo "- Image: \`${FRONTEND_IMAGE}:${GITHUB_SHA}\`"
+            echo "- Version: \`${{ needs.metadata.outputs.version }}\`"
+            echo "- Digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-qa:
+    name: Deploy QA
+    needs: [metadata, build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    environment: qa
+    concurrency:
+      group: deploy-qa
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment configuration
+        env:
+          BACKEND_WEBHOOK: ${{ secrets.COOLIFY_QA_BACKEND_WEBHOOK }}
+          FRONTEND_WEBHOOK: ${{ secrets.COOLIFY_QA_FRONTEND_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          API_URL: ${{ vars.QA_API_URL }}
+          FRONTEND_URL: ${{ vars.QA_FRONTEND_URL }}
+        shell: bash
+        run: |
+          for name in BACKEND_WEBHOOK FRONTEND_WEBHOOK COOLIFY_TOKEN API_URL FRONTEND_URL; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is not configured in the qa environment."
+              exit 1
+            fi
+          done
+          node -e 'for (const n of ["API_URL","FRONTEND_URL"]) { const u = new URL(process.env[n]); if (!["http:","https:"].includes(u.protocol)) process.exit(1) }'
+      - name: Deploy backend
+        env:
+          WEBHOOK: ${{ secrets.COOLIFY_QA_BACKEND_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: >-
+          curl --fail --silent --show-error --retry 3 --output /dev/null -X GET
+          "$WEBHOOK" -H "Authorization: Bearer $COOLIFY_TOKEN"
+      - name: Wait for backend version
+        env:
+          API_URL: ${{ vars.QA_API_URL }}
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --max-time 20 "${API_URL%/}/health" > health.json &&
+              node -e 'const h=require("./health.json"); process.exit(h.status==="ok" && h.version===process.env.EXPECTED_VERSION && h.gitSha===process.env.EXPECTED_SHA ? 0 : 1)'; then
+              echo "Backend is serving the expected build."
+              exit 0
+            fi
+            echo "Waiting for backend (attempt $attempt/30)..."
+            sleep 10
+          done
+          echo "::error::Backend did not serve the expected version in time."
+          exit 1
+      - name: Deploy frontend
+        env:
+          WEBHOOK: ${{ secrets.COOLIFY_QA_FRONTEND_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: >-
+          curl --fail --silent --show-error --retry 3 --output /dev/null -X GET
+          "$WEBHOOK" -H "Authorization: Bearer $COOLIFY_TOKEN"
+      - name: Smoke test QA
+        env:
+          FRONTEND_URL: ${{ vars.QA_FRONTEND_URL }}
+          API_URL: ${{ vars.QA_API_URL }}
+          EXPECTED_VERSION: ${{ needs.metadata.outputs.version }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash .github/scripts/smoke-test.sh "$FRONTEND_URL" "$API_URL" "$API_URL" "$EXPECTED_VERSION" "$EXPECTED_SHA"
+      - name: Deployment summary
+        run: |
+          {
+            echo "### QA deployment"
+            echo "- Version: \`${{ needs.metadata.outputs.version }}\`"
+            echo "- Git SHA: \`${{ github.sha }}\`"
+            echo "- Backend digest: \`${{ needs.build-backend.outputs.digest }}\`"
+            echo "- Frontend digest: \`${{ needs.build-frontend.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
