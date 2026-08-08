@@ -14,6 +14,8 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { logger } from "../utils/logger.js";
 import { buildFlagContext } from "../flags/context.js";
 import { evaluateBooleanFlag } from "../flags/service.js";
+import { mfaService } from "../services/mfa.service.js";
+import { PENDING_MFA_TTL_MS } from "./mfa.js";
 
 export const authRouter = Router();
 
@@ -114,11 +116,24 @@ authRouter.post("/login", async (req: Request, res: Response) => {
     return;
   }
 
-  // Success: reset the failure counter, regenerate the session id to prevent
-  // session fixation, then bind the user to the fresh session.
+  // Password success still does not authenticate an MFA-enabled account. The
+  // fresh session contains only a short-lived challenge, never userId.
   await resetLoginFailures(user.id);
   await regenerateSession(req);
+  if ((await mfaService.getStatus(user.id)).enabled) {
+    req.session.pendingMfaChallenge = {
+      userId: user.id,
+      expiresAt: Date.now() + PENDING_MFA_TTL_MS,
+    };
+    await saveSession(req);
+    logger.info({ userId: user.id }, "MFA challenge started");
+    res.status(200).json({ mfaRequired: true });
+    return;
+  }
+
+  // Non-MFA flow remains the same: bind the user to the new session.
   req.session.userId = user.id;
+  req.session.authenticatedAt = Date.now();
   await saveSession(req);
 
   logger.info({ userId: user.id }, "login successful");

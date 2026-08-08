@@ -6,6 +6,24 @@ export interface ApiUser {
   email: string;
 }
 
+export interface MfaStatus {
+  enabled: boolean;
+}
+
+export interface MfaSetup {
+  provisioningUri: string;
+  manualSecret: string;
+}
+
+export interface MfaProof {
+  totpCode?: string;
+  recoveryCode?: string;
+}
+
+export type LoginResponse =
+  | { user: ApiUser; mfaRequired?: false }
+  | { mfaRequired: true; user?: never };
+
 /**
  * Thrown for non-2xx responses. `status` lets callers special-case things like
  * 401 (unauthenticated) vs. 400/409 (validation / conflict).
@@ -114,10 +132,40 @@ export const api = {
       body: { email, password },
     });
   },
-  login(email: string, password: string): Promise<{ user: ApiUser }> {
-    return request<{ user: ApiUser }>('/api/auth/login', {
+  login(email: string, password: string): Promise<LoginResponse> {
+    return request<LoginResponse>('/api/auth/login', {
       method: 'POST',
       body: { email, password },
+    });
+  },
+  verifyMfa(proof: MfaProof): Promise<{ user: ApiUser }> {
+    return request<{ user: ApiUser }>('/api/auth/mfa/verify', {
+      method: 'POST',
+      body: proof,
+    });
+  },
+  mfaStatus(): Promise<MfaStatus> {
+    return request<MfaStatus>('/api/auth/mfa');
+  },
+  setupMfa(): Promise<MfaSetup> {
+    return request<MfaSetup>('/api/auth/mfa/setup', { method: 'POST' });
+  },
+  enableMfa(totpCode: string): Promise<{ recoveryCodes: string[] }> {
+    return request<{ recoveryCodes: string[] }>('/api/auth/mfa/enable', {
+      method: 'POST',
+      body: { totpCode },
+    });
+  },
+  disableMfa(password: string, proof: MfaProof): Promise<void> {
+    return request<void>('/api/auth/mfa/disable', {
+      method: 'POST',
+      body: { password, ...proof },
+    });
+  },
+  regenerateRecoveryCodes(password: string, proof: MfaProof): Promise<{ recoveryCodes: string[] }> {
+    return request<{ recoveryCodes: string[] }>('/api/auth/mfa/recovery-codes/regenerate', {
+      method: 'POST',
+      body: { password, ...proof },
     });
   },
   logout(): Promise<void> {

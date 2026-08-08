@@ -32,6 +32,8 @@ compiler toolchain is required.
 | `DATABASE_URL`   | yes      | `postgres://user:pass@db-host:5432/authdb`         | Used by the app AND migrations. |
 | `SESSION_SECRET` | yes      | 64 hex chars                                       | Min 32 chars. |
 | `CSRF_SECRET`    | yes      | 64 hex chars (different value)                     | Min 32 chars. |
+| `MFA_ENCRYPTION_KEY` | yes in production | 64 hex chars (different per environment) | AES-256-GCM key for TOTP seeds; exactly 32 bytes encoded as 64 hex characters. |
+| `MFA_ISSUER`     | no       | `Auth System`                                      | Authenticator-app issuer label. |
 | `APP_VERSION`    | no       | `1.0.0-qa.42`                                      | Immutable build identifier, injected by CI. |
 | `GIT_SHA`        | no       | full commit SHA                                    | Source revision, injected by CI. |
 | `BUILD_TIME`     | no       | ISO-8601 timestamp                                 | Image build time, injected by CI. |
@@ -59,7 +61,11 @@ required.
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Run it twice to get two distinct values for `SESSION_SECRET` and `CSRF_SECRET`.
+Run it three times to get distinct values for `SESSION_SECRET`, `CSRF_SECRET`,
+and `MFA_ENCRYPTION_KEY`. Use a unique MFA key in each environment; production
+mode refuses to boot without a valid key. Preserve the key separately from, but
+for at least as long as, database backups—restored MFA seeds cannot be decrypted
+without the matching historical key. See [`MFA.md`](MFA.md) for rotation limits.
 
 ## Building the images
 
@@ -103,6 +109,7 @@ docker run -d --name auth-backend -p 4000:4000 `
   -e DATABASE_URL=postgres://user:pass@db-host:5432/authdb `
   -e SESSION_SECRET=<64-hex> `
   -e CSRF_SECRET=<64-hex> `
+  -e MFA_ENCRYPTION_KEY=<unique-64-hex> `
   auth-backend:latest
 
 # Frontend

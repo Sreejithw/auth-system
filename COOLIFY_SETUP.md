@@ -223,7 +223,8 @@ box.)
 You will end up with one project `auth-system` holding three environments:
 `qa`, `staging`, and `production`. Each environment gets its own backend, frontend,
 and Postgres resources, with **its own secrets and its own database**. Never share
-`SESSION_SECRET`/`CSRF_SECRET` or a database between environments.
+`SESSION_SECRET`, `CSRF_SECRET`, `MFA_ENCRYPTION_KEY`, or a database between
+environments.
 
 ---
 
@@ -302,27 +303,32 @@ Mark the secret ones as secret/build-safe as offered. Set:
 | `CORS_ORIGIN`    | `https://app.<staging-ip-with-dashes>.sslip.io`           | Exact frontend origin (scheme+host, no trailing slash). Must match the frontend URL exactly. |
 | `SESSION_SECRET` | *(64 hex chars — generate, see below)*                    | Min 32 chars. Unique per environment. |
 | `CSRF_SECRET`    | *(64 hex chars, DIFFERENT value — generate)*              | Min 32 chars. Unique per environment and different from `SESSION_SECRET`. |
+| `MFA_ENCRYPTION_KEY` | *(64 hex chars, DIFFERENT value — generate)*          | Required before backend startup because QA, staging, and production all run `NODE_ENV=production`. Unique per environment; encrypts stored TOTP seeds. |
+| `MFA_ISSUER`     | `Auth System`                                              | Authenticator-app issuer label; keep stable for the environment. |
 | `FLIPT_ENABLED`  | `true` after Flipt is configured                           | Keep `false` during bootstrap; code defaults preserve current behavior. |
 | `FLIPT_URL`      | internal Flipt URL                                         | Never expose the Flipt token or internal URL to the browser. |
 | `FLIPT_NAMESPACE`| `auth-system-qa` / `auth-system-staging` / `auth-system-production` | Isolates flag values per environment. |
 | `FLIPT_TOKEN`    | client token (secret)                                      | Only required when Flipt authentication is enabled. |
 
-Generate the two secrets on your machine — **PowerShell (local)**, from `DEPLOY.md`:
+Generate secrets on your machine — **PowerShell (local)**, from `DEPLOY.md`:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Run it **six times total** (two secrets x three environments) so every value is
-distinct. If you do not have Node locally, generate them on the server instead:
+Run it **nine times total** (three secrets x three environments) so every value
+is distinct. `MFA_ENCRYPTION_KEY` must be an exact 64-hex-character key; do not
+reuse it across QA, staging, or production. If you do not have Node locally,
+generate them on the server instead:
 
 ```bash
 openssl rand -hex 32
 ```
 
-> Set `DATABASE_URL`, `CORS_ORIGIN`, and both secrets before the first deploy.
-> The zod loader fails fast at boot, so a missing/blank var means the container
-> exits immediately and the deploy is marked failed.
+> Set `DATABASE_URL`, `CORS_ORIGIN`, and all three secrets before the first
+> deploy. QA, staging, and production all use `NODE_ENV=production`, so a
+> missing or malformed `MFA_ENCRYPTION_KEY` makes the backend exit before it
+> starts. The zod loader fails fast, and Coolify marks that deployment failed.
 
 ### 7.2 Frontend resource
 
@@ -599,6 +605,25 @@ Expect `200`.
 
 Run the same smoke test against staging before treating production as good.
 
+### 11.3 Manual MFA validation (after smoke)
+
+The CI smoke checks are intentionally non-MFA and non-mutating. After the
+existing browser smoke test passes in QA (and before a production promotion),
+use a disposable test account to:
+
+1. Enroll an authenticator with the QR code or manual secret and confirm the
+   app requests a six-digit, 30-second TOTP.
+2. Save the displayed recovery codes offline, log out, then confirm password
+   login returns `{mfaRequired:true}`.
+3. Complete one challenge with TOTP and another with a recovery code; verify the
+   recovery code cannot be reused.
+4. Regenerate recovery codes with password plus TOTP, then disable MFA with
+   password plus proof. Confirm password-only login returns `{user}` afterward.
+
+Do not use real employee accounts or record QR secrets/recovery codes in tickets
+or deployment logs. The full validation and incident checklist is in
+[`MFA.md`](MFA.md).
+
 ---
 
 ## 12. Scheduled off-site Postgres backups
@@ -638,8 +663,10 @@ A backup you have never restored is not a backup. Periodically:
    psql "postgres://<scratch-conn>" -f backup.sql
    ```
 
-3. Verify the `users` and session tables exist and row counts look right. Tear the
-   scratch DB down afterward.
+3. Verify the `users`, MFA, and session tables exist and row counts look right.
+   For an MFA-enrolled restore, supply the matching historical
+   `MFA_ENCRYPTION_KEY` only to the isolated backend and verify a TOTP can be
+   decrypted/used. Tear the scratch DB down afterward.
 
 Document the restore steps and the last successful restore date somewhere durable.
 
@@ -724,8 +751,9 @@ CI/CD deploys cleanly.
 
 Backend: `NODE_ENV=production`, `PORT=4000`, `DATABASE_URL` (internal Postgres string),
 `CORS_ORIGIN` (that environment's frontend `https://` URL), `SESSION_SECRET`,
-`CSRF_SECRET`, and optional Flipt variables. Frontend: `API_URL` equal to that
-environment's backend HTTPS URL.
+`CSRF_SECRET`, a unique 64-hex `MFA_ENCRYPTION_KEY`, `MFA_ISSUER`, and optional
+Flipt variables. Frontend: `API_URL` equal to that environment's backend HTTPS
+URL.
 
 **Provided by you to Coolify once (step 6):** the GitHub `read:packages` PAT as the
 `ghcr.io` registry credential.

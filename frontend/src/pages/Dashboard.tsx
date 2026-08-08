@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { getRuntimeConfig } from '../config/runtimeConfig';
 import { useFlag } from '../flags/FlagContext';
+import MfaSecurity from '../components/MfaSecurity';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -46,6 +47,7 @@ export default function Dashboard() {
             <span className="user-badge-label">Signed in as</span>
             <span className="user-badge-email">{user?.email}</span>
           </div>
+          <MfaSecurity />
         </div>
       </main>
       <footer className="build-info">

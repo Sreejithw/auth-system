@@ -26,3 +26,13 @@ export const authLimiter = rateLimit({
   skipSuccessfulRequests: true,
   message: { error: "Too many attempts, please try again later." },
 });
+
+/** MFA codes have a separate, stricter brute-force budget. */
+export const mfaLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many attempts, please try again later." },
+});
