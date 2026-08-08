@@ -149,7 +149,7 @@ jobs:
             exit 1
           fi
       - name: Build image locally
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -221,7 +221,7 @@ jobs:
             exit 1
           fi
       - name: Build image locally
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
