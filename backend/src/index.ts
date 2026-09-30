@@ -4,16 +4,24 @@ import { env, isProduction } from "./config/env.js";
 import { logger } from "./utils/logger.js";
 import { assertDbConnection } from "./db/pool.js";
 import { securityHeaders, corsMiddleware } from "./middleware/security.js";
-import { globalLimiter, authLimiter } from "./middleware/rateLimit.js";
+import {
+  globalLimiter,
+  authLimiter,
+  mfaLimiter,
+} from "./middleware/rateLimit.js";
 import { sessionMiddleware } from "./middleware/session.js";
+import { sessionExpiryMiddleware } from "./middleware/sessionExpiry.js";
 import { doubleCsrfProtection, generateCsrfToken } from "./middleware/csrf.js";
 import { notFoundHandler, errorHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.js";
+import { mfaRouter } from "./routes/mfa.js";
+import { adminRouter } from "./routes/admin.js";
 import { flagsRouter } from "./routes/flags.js";
 import {
   initializeFeatureFlags,
   shutdownFeatureFlags,
 } from "./flags/service.js";
+import { initializeSettings } from "./services/settings.service.js";
 
 const app = express();
 
@@ -23,7 +31,7 @@ app.set("trust proxy", isProduction ? 1 : false);
 app.disable("x-powered-by");
 
 // --- Middleware chain: helmet -> CORS -> rate limit -> body parse ->
-//     cookie parse -> session -> CSRF -> routes ---
+//     cookie parse -> session -> session expiry -> CSRF -> routes ---
 app.use(securityHeaders);
 app.use(corsMiddleware);
 app.use(globalLimiter);
@@ -38,6 +46,7 @@ app.use(cookieParser());
 // Session must run before CSRF: the double-submit token is bound to the
 // session id (see middleware/csrf.ts), so the session must be available first.
 app.use(sessionMiddleware);
+app.use(sessionExpiryMiddleware);
 
 // Browser-safe flags are evaluated after session targeting is available and
 // before CSRF protection. The router exposes only its explicit allowlist.
@@ -74,17 +83,21 @@ app.use(doubleCsrfProtection);
 // Tighter rate limit specifically on credential endpoints.
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/mfa", mfaLimiter);
 
 app.use("/api/auth", authRouter);
+app.use("/api/auth/mfa", mfaRouter);
+app.use("/api/admin", adminRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
 
 async function start(): Promise<void> {
+  await assertDbConnection();
+  await initializeSettings();
   // Initialization is deliberately non-blocking: auth remains available even
   // if Flipt is unreachable or misconfigured.
   void initializeFeatureFlags();
-  await assertDbConnection();
   app.listen(env.PORT, () => {
     logger.info(
       { port: env.PORT, env: env.NODE_ENV, corsOrigin: env.CORS_ORIGIN },

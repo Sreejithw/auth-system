@@ -102,7 +102,19 @@ patch release pointing to the previously verified source build.
 - QA resources track tag `qa`; staging tracks `staging`; production tracks
   `production`.
 - Every environment has isolated PostgreSQL and application secrets.
+- Every production-mode backend (including QA and staging) has a distinct,
+  runtime-injected 64-hex `MFA_ENCRYPTION_KEY` before deploy; it is never a
+  GitHub secret, image build argument, or source value.
 - Frontend resources set runtime `API_URL`; backend resources set the exact
   sibling frontend `CORS_ORIGIN`.
 - Webhooks are HTTP `GET` requests authenticated by the Coolify Bearer token.
 - Trivy blocks HIGH/CRITICAL findings before any image is published.
+
+## Smoke-test scope
+
+Deployment smoke tests are deliberately **non-MFA and non-mutating**: they check
+health, build identity, and public frontend availability without registering
+accounts, signing in, changing MFA state, or consuming recovery codes. They do
+not prove MFA enrollment or challenge behavior. Run the disposable-account
+manual MFA checklist in [`MFA.md`](../MFA.md) after QA smoke succeeds and before
+promoting a release that changes MFA.

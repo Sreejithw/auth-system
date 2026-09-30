@@ -12,5 +12,30 @@ declare module "express-session" {
     csrfBootstrapped?: boolean;
     /** Stable server-generated identifier used for anonymous flag targeting. */
     flagAnonymousId?: string;
+    /**
+     * A short-lived, unauthenticated MFA login stage. This deliberately never
+     * sets userId: only a successful second-factor check can authenticate it.
+     */
+    pendingMfaChallenge?: {
+      userId: string;
+      expiresAt: number;
+    };
+    /** Encrypted, short-lived seed awaiting TOTP activation. */
+    pendingMfaSetup?: {
+      encryptedSecret: string;
+      expiresAt: number;
+    };
+    /** Timestamp of password + (where applicable) MFA authentication. */
+    authenticatedAt?: number;
+    /** When this authenticated session began (snapshot). */
+    sessionStartedAt?: number;
+    /** Idle TTL (ms) frozen at authentication for grandfathered rolling refresh. */
+    idleTtlMsAtIssue?: number;
+    /** Rolling idle deadline (updated on qualifying activity). */
+    idleExpiresAt?: number;
+    /** Hard stop deadline; never extended by activity. */
+    absoluteExpiresAt?: number;
+    /** Last qualifying activity timestamp. */
+    lastActivityAt?: number;
   }
 }

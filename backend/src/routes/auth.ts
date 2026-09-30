@@ -5,15 +5,19 @@ import { hashPassword, verifyPassword } from "../utils/password.js";
 import {
   createUser,
   findByEmail,
-  findPublicById,
+  findPublicWithAdminById,
   isLocked,
   registerFailedLogin,
   resetLoginFailures,
 } from "../services/user.service.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { sessionCookieOptions } from "../middleware/session.js";
 import { logger } from "../utils/logger.js";
 import { buildFlagContext } from "../flags/context.js";
 import { evaluateBooleanFlag } from "../flags/service.js";
+import { mfaService } from "../services/mfa.service.js";
+import { applySessionExpirySnapshot } from "../services/sessionExpiry.js";
+import { getDurationMs } from "../services/settings.service.js";
 
 export const authRouter = Router();
 
@@ -114,15 +118,31 @@ authRouter.post("/login", async (req: Request, res: Response) => {
     return;
   }
 
-  // Success: reset the failure counter, regenerate the session id to prevent
-  // session fixation, then bind the user to the fresh session.
+  // Password success still does not authenticate an MFA-enabled account. The
+  // fresh session contains only a short-lived challenge, never userId.
   await resetLoginFailures(user.id);
   await regenerateSession(req);
+  if ((await mfaService.getStatus(user.id)).enabled) {
+    req.session.pendingMfaChallenge = {
+      userId: user.id,
+      expiresAt: Date.now() + getDurationMs("mfa.challenge_ttl_ms"),
+    };
+    await saveSession(req);
+    logger.info({ userId: user.id }, "MFA challenge started");
+    res.status(200).json({ mfaRequired: true });
+    return;
+  }
+
+  // Non-MFA flow: bind the user and snapshot expiry deadlines.
   req.session.userId = user.id;
+  applySessionExpirySnapshot(req.session);
   await saveSession(req);
 
   logger.info({ userId: user.id }, "login successful");
-  res.status(200).json({ user: { id: user.id, email: user.email } });
+  res.status(200).json({
+    user: { id: user.id, email: user.email },
+    isAdmin: user.is_admin,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -135,7 +155,8 @@ authRouter.post("/logout", (req: Request, res: Response) => {
       res.status(500).json({ error: "Logout failed" });
       return;
     }
-    res.clearCookie("sid", { path: "/" });
+    res.clearCookie("sid", sessionCookieOptions);
+    logger.info("logout_success");
     res.status(200).json({ message: "Logged out" });
   });
 });
@@ -145,7 +166,7 @@ authRouter.post("/logout", (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId as string;
-  const user = await findPublicById(userId);
+  const user = await findPublicWithAdminById(userId);
 
   if (!user) {
     // Session references a user that no longer exists — clean up.
@@ -154,5 +175,18 @@ authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
-  res.status(200).json({ user });
+  res.status(200).json({
+    user: { id: user.id, email: user.email },
+    isAdmin: user.isAdmin,
+    session: {
+      idleExpiresAt:
+        typeof req.session.idleExpiresAt === "number"
+          ? new Date(req.session.idleExpiresAt).toISOString()
+          : null,
+      absoluteExpiresAt:
+        typeof req.session.absoluteExpiresAt === "number"
+          ? new Date(req.session.absoluteExpiresAt).toISOString()
+          : null,
+    },
+  });
 });

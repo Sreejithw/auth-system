@@ -6,6 +6,7 @@ import {
 } from "@openfeature/server-sdk";
 import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
+import { getDurationMs } from "../services/settings.service.js";
 import {
   CLIENT_FLAG_KEYS,
   FLAG_DEFINITIONS,
@@ -13,7 +14,6 @@ import {
   type FlagKey,
 } from "./definitions.js";
 
-const EVALUATION_TIMEOUT_MS = 750;
 const client = OpenFeature.getClient("auth-system");
 
 type BooleanEvaluator = (
@@ -64,7 +64,7 @@ async function withTimeout<T>(operation: Promise<T>): Promise<T> {
       new Promise<T>((_resolve, reject) => {
         timeout = setTimeout(
           () => reject(new Error("feature flag evaluation timed out")),
-          EVALUATION_TIMEOUT_MS,
+          getDurationMs("flags.evaluation_timeout_ms"),
         );
       }),
     ]);

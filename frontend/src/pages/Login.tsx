@@ -41,8 +41,9 @@ export default function Login() {
 
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
-      navigate(from, { replace: true });
+      const stage = await login(email.trim(), password);
+      setPassword('');
+      navigate(stage === 'mfa' ? '/mfa/verify' : from, { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
         setFormError(err.message || 'Invalid email or password.');

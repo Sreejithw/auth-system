@@ -1,4 +1,5 @@
 import { pool } from "../db/pool.js";
+import { getDurationMs, getInt } from "./settings.service.js";
 
 export interface UserRecord {
   id: string;
@@ -6,6 +7,7 @@ export interface UserRecord {
   password_hash: string;
   failed_login_attempts: number;
   locked_until: Date | null;
+  is_admin: boolean;
 }
 
 export interface PublicUser {
@@ -13,10 +15,9 @@ export interface PublicUser {
   email: string;
 }
 
-/** Number of consecutive failed logins before an account is temporarily locked. */
-export const MAX_FAILED_ATTEMPTS = 5;
-/** How long an account stays locked once the threshold is hit. */
-export const LOCKOUT_MINUTES = 15;
+export interface PublicUserWithAdmin extends PublicUser {
+  isAdmin: boolean;
+}
 
 /**
  * Insert a new user. Returns the created public user, or `null` if the email
@@ -44,10 +45,30 @@ export async function createUser(
 
 export async function findByEmail(email: string): Promise<UserRecord | null> {
   const { rows } = await pool.query<UserRecord>(
-    `SELECT id, email, password_hash, failed_login_attempts, locked_until
+    `SELECT id, email, password_hash, failed_login_attempts, locked_until, is_admin
      FROM users
      WHERE email = $1`,
     [email],
+  );
+  return rows[0] ?? null;
+}
+
+export async function findById(id: string): Promise<UserRecord | null> {
+  const { rows } = await pool.query<UserRecord>(
+    `SELECT id, email, password_hash, failed_login_attempts, locked_until, is_admin
+     FROM users
+     WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function findAdminById(
+  id: string,
+): Promise<{ id: string; is_admin: boolean } | null> {
+  const { rows } = await pool.query<{ id: string; is_admin: boolean }>(
+    `SELECT id, is_admin FROM users WHERE id = $1`,
+    [id],
   );
   return rows[0] ?? null;
 }
@@ -60,8 +81,26 @@ export async function findPublicById(id: string): Promise<PublicUser | null> {
   return rows[0] ?? null;
 }
 
+export async function findPublicWithAdminById(
+  id: string,
+): Promise<PublicUserWithAdmin | null> {
+  const { rows } = await pool.query<{
+    id: string;
+    email: string;
+    is_admin: boolean;
+  }>(`SELECT id, email, is_admin FROM users WHERE id = $1`, [id]);
+  const row = rows[0];
+  if (!row) return null;
+  return { id: row.id, email: row.email, isAdmin: row.is_admin };
+}
+
 /** Increment failed attempts and lock the account when the threshold is reached. */
 export async function registerFailedLogin(id: string): Promise<void> {
+  const maxAttempts = getInt("auth.lockout_max_failed_attempts");
+  const lockoutMinutes = Math.max(
+    1,
+    Math.ceil(getDurationMs("auth.lockout_duration_ms") / 60_000),
+  );
   await pool.query(
     `UPDATE users
      SET failed_login_attempts = failed_login_attempts + 1,
@@ -71,7 +110,7 @@ export async function registerFailedLogin(id: string): Promise<void> {
            ELSE locked_until
          END
      WHERE id = $1`,
-    [id, MAX_FAILED_ATTEMPTS, String(LOCKOUT_MINUTES)],
+    [id, maxAttempts, String(lockoutMinutes)],
   );
 }
 

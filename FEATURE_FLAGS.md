@@ -15,6 +15,14 @@ never receives its token or authoritative flags.
 Defaults deliberately preserve the stable application. Flipt outages or
 timeouts do not take down authentication.
 
+## MFA is not a flag
+
+MFA enrollment and enforcement are intentionally outside the feature-flag
+system. No Flipt flag can enable, disable, or bypass MFA for an enrolled user;
+an MFA-capable account must complete its TOTP or recovery-code login challenge.
+This avoids a flag-provider outage or targeting mistake weakening authentication.
+See [`MFA.md`](MFA.md) for enrollment and operational policy.
+
 ## Local Flipt
 
 Start PostgreSQL and the pinned Flipt container:

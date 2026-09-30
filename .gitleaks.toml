@@ -1,0 +1,11 @@
+title = "auth-system Gitleaks configuration"
+
+# The first MFA commit contains this deterministic test fixture.  It is
+# constructed at runtime now, but CI scans the complete PR history, so retain
+# this exact-match exception for the already-pushed commit only.
+[allowlist]
+description = "Historical deterministic MFA test key fixture"
+regexTarget = "match"
+regexes = [
+  '''(?s)process\.env\.MFA_ENCRYPTION_KEY\s*=\s*"(?:0123456789abcdef){4}"''',
+]

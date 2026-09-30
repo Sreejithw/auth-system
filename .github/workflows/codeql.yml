@@ -1,13 +1,13 @@
 name: CodeQL
 
 # Static analysis for JavaScript/TypeScript across both packages (backend +
-# frontend). Runs on push/PR to main and on a weekly schedule
+# frontend). Runs on push to main, PRs targeting main or develop, and weekly
 # so newly disclosed query patterns catch previously-committed code.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   schedule:
     - cron: "27 3 * * 1"
 
@@ -37,6 +37,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
+          config-file: ./.github/codeql-config.yml
           # Interpreted language: no compilation needed. The scan walks the whole
           # repo, so both backend/ and frontend/ are covered.
           build-mode: none
