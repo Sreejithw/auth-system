@@ -10,6 +10,8 @@ const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     flags: vi.fn(),
     me: vi.fn(),
+    getSettings: vi.fn(),
+    updateSettings: vi.fn(),
     register: vi.fn(),
     login: vi.fn(),
     verifyMfa: vi.fn(),

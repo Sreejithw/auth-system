@@ -302,6 +302,12 @@ body {
   backdrop-filter: blur(8px);
 }
 
+.header-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .brand {
   font-weight: 650;
   letter-spacing: 0.2px;
@@ -426,6 +432,46 @@ body {
   color: var(--text-muted);
   font-size: 0.75rem;
   text-align: center;
+}
+
+.session-expiry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.settings-card {
+  max-width: 720px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.settings-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-input-row input {
+  max-width: 160px;
 }
 
 /* ---------- Loading spinner ---------- */

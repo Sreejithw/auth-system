@@ -1,0 +1,5 @@
+name: "Auth system CodeQL config"
+
+paths-ignore:
+  - "backend/test/**"
+  - "frontend/test/**"

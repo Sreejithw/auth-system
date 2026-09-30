@@ -4,11 +4,11 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { mfaService } from "../services/mfa.service.js";
 import { findById, findPublicById } from "../services/user.service.js";
 import { verifyPassword } from "../utils/password.js";
+import { applySessionExpirySnapshot } from "../services/sessionExpiry.js";
+import { getDurationMs } from "../services/settings.service.js";
 
 export const mfaRouter = Router();
 
-const PENDING_MFA_TTL_MS = 10 * 60 * 1000;
-const RECENT_AUTH_TTL_MS = 10 * 60 * 1000;
 const codeSchema = z
   .object({
     totpCode: z.string().regex(/^\d{6}$/).optional(),
@@ -50,7 +50,8 @@ function regenerateSession(req: Request): Promise<void> {
 function hasRecentAuthentication(req: Request): boolean {
   return (
     typeof req.session.authenticatedAt === "number" &&
-    Date.now() - req.session.authenticatedAt <= RECENT_AUTH_TTL_MS
+    Date.now() - req.session.authenticatedAt <=
+      getDurationMs("mfa.recent_auth_ttl_ms")
   );
 }
 
@@ -85,7 +86,7 @@ mfaRouter.post("/setup", requireAuth, async (req: Request, res: Response) => {
   const setup = mfaService.createSetupForLabel(user.email);
   req.session.pendingMfaSetup = {
     encryptedSecret: setup.encryptedSecret,
-    expiresAt: Date.now() + PENDING_MFA_TTL_MS,
+    expiresAt: Date.now() + getDurationMs("mfa.challenge_ttl_ms"),
   };
   await saveSession(req);
   noStore(res);
@@ -207,9 +208,7 @@ mfaRouter.post("/verify", async (req: Request, res: Response) => {
 
   await regenerateSession(req);
   req.session.userId = challenge.userId;
-  req.session.authenticatedAt = Date.now();
+  applySessionExpirySnapshot(req.session);
   await saveSession(req);
   res.status(200).json({ user });
 });
-
-export { PENDING_MFA_TTL_MS };

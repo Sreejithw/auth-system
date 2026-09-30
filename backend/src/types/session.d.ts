@@ -27,5 +27,15 @@ declare module "express-session" {
     };
     /** Timestamp of password + (where applicable) MFA authentication. */
     authenticatedAt?: number;
+    /** When this authenticated session began (snapshot). */
+    sessionStartedAt?: number;
+    /** Idle TTL (ms) frozen at authentication for grandfathered rolling refresh. */
+    idleTtlMsAtIssue?: number;
+    /** Rolling idle deadline (updated on qualifying activity). */
+    idleExpiresAt?: number;
+    /** Hard stop deadline; never extended by activity. */
+    absoluteExpiresAt?: number;
+    /** Last qualifying activity timestamp. */
+    lastActivityAt?: number;
   }
 }

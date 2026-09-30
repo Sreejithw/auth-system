@@ -10,7 +10,9 @@ advanced items are captured in the roadmap below.
 Deployment promotion is documented in [`.github/README.md`](.github/README.md),
 Coolify provisioning in [`COOLIFY_SETUP.md`](COOLIFY_SETUP.md), and flag
 operations in [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md). MFA enrollment, recovery,
-operational limits, and incident response are in [`MFA.md`](MFA.md).
+operational limits, and incident response are in [`MFA.md`](MFA.md). Session
+expiry and database-backed timeout settings are in
+[`SESSION_MANAGEMENT.md`](SESSION_MANAGEMENT.md).
 
 ## Architecture
 

@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:debug": "node --inspect=9230 ./node_modules/vite/bin/vite.js",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --noEmit",
     "lint": "oxlint",
     "test": "vitest run",
+    "test:watch": "vitest",
+    "test:debug": "vitest run --inspect-brk --no-file-parallelism --test-timeout=0",
     "preview": "vite preview"
   },
   "dependencies": {

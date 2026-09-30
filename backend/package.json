@@ -7,11 +7,14 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:debug": "tsx --inspect=9229 src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src test",
     "test": "vitest run",
+    "test:watch": "vitest",
+    "test:debug": "vitest run --inspect-brk --no-file-parallelism --test-timeout=0",
     "migrate": "node-pg-migrate up --envPath .env",
     "migrate:down": "node-pg-migrate down --envPath .env"
   },
@@ -57,7 +60,8 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
-    "ip-address": "10.4.0"
+    "brace-expansion": "5.0.12",
+    "ip-address": "10.7.2",
+    "qs": "6.16.0"
   }
 }
