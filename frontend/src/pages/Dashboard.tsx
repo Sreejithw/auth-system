@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext';
 import { getRuntimeConfig } from '../config/runtimeConfig';
 import { useFlag } from '../flags/FlagContext';
 import MfaSecurity from '../components/MfaSecurity';
+import { PERMISSIONS } from '../auth/permissions';
 
 function formatExpiry(iso: string | null | undefined): string | null {
   if (!iso) return null;
@@ -13,7 +14,7 @@ function formatExpiry(iso: string | null | undefined): string | null {
 }
 
 export default function Dashboard() {
-  const { user, isAdmin, session, logout } = useAuth();
+  const { user, session, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
   const [loggingOut, setLoggingOut] = useState(false);
   const { version, gitSha } = getRuntimeConfig();
@@ -36,9 +37,14 @@ export default function Dashboard() {
       <header className="dashboard-header">
         <span className="brand">Auth System</span>
         <div className="header-nav">
-          {isAdmin && (
+          {hasPermission(PERMISSIONS.SETTINGS_READ) && (
             <Link to="/admin/settings" className="btn btn-ghost">
               Settings
+            </Link>
+          )}
+          {hasPermission(PERMISSIONS.USERS_READ) && (
+            <Link to="/admin/users" className="btn btn-ghost">
+              User Access
             </Link>
           )}
           <button

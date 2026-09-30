@@ -1,5 +1,6 @@
 import { pool } from "../db/pool.js";
 import { getDurationMs, getInt } from "./settings.service.js";
+import { assignDefaultRole } from "./authorization.service.js";
 
 export interface UserRecord {
   id: string;
@@ -7,16 +8,11 @@ export interface UserRecord {
   password_hash: string;
   failed_login_attempts: number;
   locked_until: Date | null;
-  is_admin: boolean;
 }
 
 export interface PublicUser {
   id: string;
   email: string;
-}
-
-export interface PublicUserWithAdmin extends PublicUser {
-  isAdmin: boolean;
 }
 
 /**
@@ -28,24 +24,33 @@ export async function createUser(
   email: string,
   passwordHash: string,
 ): Promise<PublicUser | null> {
+  const client = await pool.connect();
   try {
-    const { rows } = await pool.query<PublicUser>(
+    await client.query("BEGIN");
+    const { rows } = await client.query<PublicUser>(
       `INSERT INTO users (email, password_hash)
        VALUES ($1, $2)
        RETURNING id, email`,
       [email, passwordHash],
     );
-    return rows[0] ?? null;
+    const user = rows[0];
+    if (!user) throw new Error("User insert returned no row");
+    await assignDefaultRole(client, user.id);
+    await client.query("COMMIT");
+    return user;
   } catch (err: unknown) {
+    await client.query("ROLLBACK");
     // 23505 = unique_violation (duplicate email)
     if (isUniqueViolation(err)) return null;
     throw err;
+  } finally {
+    client.release();
   }
 }
 
 export async function findByEmail(email: string): Promise<UserRecord | null> {
   const { rows } = await pool.query<UserRecord>(
-    `SELECT id, email, password_hash, failed_login_attempts, locked_until, is_admin
+    `SELECT id, email, password_hash, failed_login_attempts, locked_until
      FROM users
      WHERE email = $1`,
     [email],
@@ -55,19 +60,9 @@ export async function findByEmail(email: string): Promise<UserRecord | null> {
 
 export async function findById(id: string): Promise<UserRecord | null> {
   const { rows } = await pool.query<UserRecord>(
-    `SELECT id, email, password_hash, failed_login_attempts, locked_until, is_admin
+    `SELECT id, email, password_hash, failed_login_attempts, locked_until
      FROM users
      WHERE id = $1`,
-    [id],
-  );
-  return rows[0] ?? null;
-}
-
-export async function findAdminById(
-  id: string,
-): Promise<{ id: string; is_admin: boolean } | null> {
-  const { rows } = await pool.query<{ id: string; is_admin: boolean }>(
-    `SELECT id, is_admin FROM users WHERE id = $1`,
     [id],
   );
   return rows[0] ?? null;
@@ -79,19 +74,6 @@ export async function findPublicById(id: string): Promise<PublicUser | null> {
     [id],
   );
   return rows[0] ?? null;
-}
-
-export async function findPublicWithAdminById(
-  id: string,
-): Promise<PublicUserWithAdmin | null> {
-  const { rows } = await pool.query<{
-    id: string;
-    email: string;
-    is_admin: boolean;
-  }>(`SELECT id, email, is_admin FROM users WHERE id = $1`, [id]);
-  const row = rows[0];
-  if (!row) return null;
-  return { id: row.id, email: row.email, isAdmin: row.is_admin };
 }
 
 /** Increment failed attempts and lock the account when the threshold is reached. */

@@ -17,8 +17,9 @@ Related docs: [`MFA.md`](MFA.md), [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md),
 ```powershell
 cd backend
 npm run migrate
-# Promote an existing user (replace the email):
-# psql $DATABASE_URL -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com';"
+# Bootstrap the first administrator (replace the email). Later assignments use
+# the User Access screen:
+# psql $DATABASE_URL -c "INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u CROSS JOIN roles r WHERE u.email = 'you@example.com' AND r.key = 'administrator' ON CONFLICT DO NOTHING;"
 ```
 
 ### Debugging tests (source-level)

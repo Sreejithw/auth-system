@@ -5,7 +5,7 @@ import { hashPassword, verifyPassword } from "../utils/password.js";
 import {
   createUser,
   findByEmail,
-  findPublicWithAdminById,
+  findPublicById,
   isLocked,
   registerFailedLogin,
   resetLoginFailures,
@@ -18,6 +18,7 @@ import { evaluateBooleanFlag } from "../flags/service.js";
 import { mfaService } from "../services/mfa.service.js";
 import { applySessionExpirySnapshot } from "../services/sessionExpiry.js";
 import { getDurationMs } from "../services/settings.service.js";
+import { getAuthorizationForUser } from "../services/authorization.service.js";
 
 export const authRouter = Router();
 
@@ -139,9 +140,10 @@ authRouter.post("/login", async (req: Request, res: Response) => {
   await saveSession(req);
 
   logger.info({ userId: user.id }, "login successful");
+  const authorization = await getAuthorizationForUser(user.id);
   res.status(200).json({
     user: { id: user.id, email: user.email },
-    isAdmin: user.is_admin,
+    isAdmin: authorization.roles.includes("administrator"),
   });
 });
 
@@ -166,18 +168,24 @@ authRouter.post("/logout", (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
   const userId = req.session.userId as string;
-  const user = await findPublicWithAdminById(userId);
+  const user = await findPublicById(userId);
 
   if (!user) {
     // Session references a user that no longer exists — clean up.
     req.session.destroy(() => undefined);
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({
+      error: "Authentication required",
+      code: "AUTHENTICATION_REQUIRED",
+    });
     return;
   }
 
+  const authorization = await getAuthorizationForUser(userId);
   res.status(200).json({
     user: { id: user.id, email: user.email },
-    isAdmin: user.isAdmin,
+    roles: authorization.roles,
+    permissions: authorization.permissions,
+    isAdmin: authorization.roles.includes("administrator"),
     session: {
       idleExpiresAt:
         typeof req.session.idleExpiresAt === "number"

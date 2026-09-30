@@ -12,7 +12,9 @@ Coolify provisioning in [`COOLIFY_SETUP.md`](COOLIFY_SETUP.md), and flag
 operations in [`FEATURE_FLAGS.md`](FEATURE_FLAGS.md). MFA enrollment, recovery,
 operational limits, and incident response are in [`MFA.md`](MFA.md). Session
 expiry and database-backed timeout settings are in
-[`SESSION_MANAGEMENT.md`](SESSION_MANAGEMENT.md).
+[`SESSION_MANAGEMENT.md`](SESSION_MANAGEMENT.md). Global roles, permissions,
+access-management APIs, and frontend authorization behavior are specified in
+[`AUTHORIZATION.md`](AUTHORIZATION.md).
 
 ## Architecture
 
@@ -71,7 +73,9 @@ middleware runs before CSRF** in the chain.
   immutable frontend image can be promoted through QA, staging, and production.
 - `FlagContext` consumes only backend-evaluated, client-safe flags. Flipt
   credentials and authoritative flags never enter the browser.
-- Minimal, clean UI: Login, Register, Dashboard (shows the user + logout).
+- Permission-aware UI: Login, Register, MFA verification and management,
+  Dashboard, read/write-aware Settings, and searchable User Access role
+  management.
 
 ## Prerequisites
 
@@ -202,6 +206,11 @@ Mutating requests (`POST`) must include a valid CSRF token in the
 | `POST /api/auth/mfa/disable` | yes | `{password, totpCode}` or `{password, recoveryCode}` | `200 {message}` | Requires the password and exactly one current proof. |
 | `POST /api/auth/mfa/recovery-codes/regenerate` | yes | `{password, totpCode}` or `{password, recoveryCode}` | `200 {recoveryCodes}` | Invalidates all previously issued recovery codes. |
 | `POST /api/auth/mfa/verify` | challenge | `{totpCode}` or `{recoveryCode}` | `200 {user}` | Completes the short-lived MFA login challenge. |
+| `GET /api/admin/settings` | `settings:read` | — | `200 {settings}` | Returns database-backed operational settings. |
+| `PUT /api/admin/settings` | `settings:update` | `{settings}` | `200 {settings}` | Requires recent authentication. |
+| `GET /api/admin/users` | `users:read` | Query: `search`, `limit`, `cursor` | `200 {users,nextCursor}` | Bounded user search with assigned roles. |
+| `GET /api/admin/roles` | `users:roles:update` | — | `200 {roles}` | Returns the fixed system role catalog. |
+| `PUT /api/admin/users/:userId/roles` | `users:roles:update` | `{roleKeys}` | `200 {user}` | Requires recent authentication and enforces administrator safeguards. |
 
 Common error responses: `400` (validation), `401` (`Invalid email or
 password`, generic), `403` (`Invalid CSRF token`), `413` (payload too large),
@@ -259,6 +268,12 @@ separate 10-failed-requests-per-15-minutes per-IP limit, plus the five-failure,
   recovery codes are Argon2id-hashed, TOTP steps cannot be replayed, and MFA
   verification has a tighter rate limit. MFA deliberately has no trusted-device
   bypass. See [`MFA.md`](MFA.md) for operational constraints.
+- **Database-backed role-based access control** — *Threat:* privilege
+  escalation and unauthorized administrative actions. *Justification:* fixed
+  roles grant explicit permissions, the backend checks current assignments on
+  every privileged request, role changes require recent authentication, and
+  final-administrator/self-demotion safeguards prevent accidental lockout. See
+  [`AUTHORIZATION.md`](AUTHORIZATION.md).
 - **Input validation with zod** — *Threat:* injection, malformed/oversized
   input, mass-assignment. *Justification:* strict (`.strict()`) schemas reject
   unknown fields and bad data at the edge; only whitelisted fields reach
@@ -305,7 +320,8 @@ future work:
 - Password reset flow.
 - WebAuthn / passkeys.
 - Breached-password check via HIBP k-anonymity.
-- RBAC / fine-grained authorization.
+- Organization-scoped and relationship-based authorization beyond the global
+  RBAC model documented in [`AUTHORIZATION.md`](AUTHORIZATION.md).
 - Redis session store for horizontal scale.
 - Signed container provenance and admission-time signature verification.
 - Secret rotation.
@@ -317,6 +333,7 @@ future work:
 auth-system/
   docker-compose.yml            # local Postgres service
   DEPLOY.md                     # container build + deploy + migration guide
+  AUTHORIZATION.md              # RBAC roles, permissions, APIs, and UI design
   FEATURE_FLAGS.md              # OpenFeature/Flipt operations and lifecycle
   MFA.md                        # TOTP enrollment, recovery, and operations
   VERSION                       # base SemVer for automatic QA build versions
@@ -338,10 +355,13 @@ auth-system/
         session.ts              # express-session + connect-pg-simple
         csrf.ts                 # csrf-csrf double-submit
         requireAuth.ts          # protected-route guard
+        requirePermission.ts    # live database-backed permission guard
         errorHandler.ts         # 404 + centralized error handling
       routes/auth.ts            # register / login / logout / me
       routes/mfa.ts             # MFA status, enrollment, recovery, login proof
       routes/flags.ts           # allowlisted client-safe flag evaluations
+      routes/admin.ts           # settings and user-role administration
+      services/authorization.service.ts # RBAC queries and safe role replacement
       services/user.service.ts  # parameterized user queries + lockout
       utils/
         password.ts             # Argon2id hash/verify
@@ -354,10 +374,11 @@ auth-system/
       main.tsx  App.tsx
       api/client.ts             # fetch wrapper (credentials + CSRF)
       auth/AuthContext.tsx      # current-user context
+      auth/permissions.ts       # typed frontend permission catalog
       config/runtimeConfig.ts   # environment-neutral runtime API config
       flags/                    # safe defaults + React flag context
-      pages/{Login,Register,Dashboard}.tsx
-      components/ProtectedRoute.tsx
+      pages/{Login,Register,Dashboard,AdminSettings,AdminUsers}.tsx
+      components/{ProtectedRoute,PermissionRoute}.tsx
 ```
 
 ## License

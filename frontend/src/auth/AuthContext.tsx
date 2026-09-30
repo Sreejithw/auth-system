@@ -3,9 +3,12 @@ import type { ReactNode } from 'react';
 import { api, ApiError, clearCsrfToken } from '../api/client';
 import type { ApiUser, MfaProof, SessionInfo } from '../api/client';
 import { FlagProvider } from '../flags/FlagContext';
+import type { Permission } from './permissions';
 
 interface AuthContextValue {
   user: ApiUser | null;
+  roles: string[];
+  permissions: Permission[];
   isAdmin: boolean;
   session: SessionInfo | null;
   /** True while the initial `/me` check is in flight. */
@@ -18,12 +21,16 @@ interface AuthContextValue {
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<void>;
+  hasPermission: (permission: Permission) => boolean;
+  hasAnyPermission: (permissions: Permission[]) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<ApiUser | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [permissions, setPermissions] = useState<Permission[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,6 +38,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearAuthState = useCallback(() => {
     setUser(null);
+    setRoles([]);
+    setPermissions([]);
     setIsAdmin(false);
     setSession(null);
     setPendingMfa(false);
@@ -40,6 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const me = await api.me();
       setUser(me.user);
+      setRoles(me.roles ?? []);
+      setPermissions(me.permissions ?? []);
       setIsAdmin(Boolean(me.isAdmin));
       setSession(me.session ?? null);
       setPendingMfa(false);
@@ -113,9 +124,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await logout();
   }, [logout]);
 
+  const hasPermission = useCallback(
+    (permission: Permission) => permissions.includes(permission),
+    [permissions],
+  );
+
+  const hasAnyPermission = useCallback(
+    (required: Permission[]) => required.some((permission) => permissions.includes(permission)),
+    [permissions],
+  );
+
   const value = useMemo(
     () => ({
       user,
+      roles,
+      permissions,
       isAdmin,
       session,
       loading,
@@ -126,9 +149,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       refreshSession,
+      hasPermission,
+      hasAnyPermission,
     }),
     [
       user,
+      roles,
+      permissions,
       isAdmin,
       session,
       loading,
@@ -139,6 +166,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       register,
       logout,
       refreshSession,
+      hasPermission,
+      hasAnyPermission,
     ],
   );
 

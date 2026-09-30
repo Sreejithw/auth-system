@@ -1,5 +1,6 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle } from "docx";
 import fs from "fs";
+import { fileURLToPath } from "node:url";
 
 const border = { style: BorderStyle.SINGLE, size: 4, color: "999999" };
 const borders = { top: border, bottom: border, left: border, right: border };
@@ -379,13 +380,12 @@ Option B:
   {
     title: "14. Admin settings (list)",
     summary:
-      "Lists all database-backed timeout/threshold settings for admins.",
+      "Lists all database-backed timeout/threshold settings for users with settings read access.",
     endpoint: "GET /api/admin/settings",
-    auth: "Authenticated admin session",
+    auth: "settings:read permission",
     functions: [
       'routes/admin.ts → GET "/settings"',
-      "middleware/requireAuth.ts → requireAuth",
-      "middleware/requireAdmin.ts → requireAdmin",
+      "middleware/requirePermission.ts → requirePermission",
       "services/settings.service.ts → getAllSettings",
     ],
     payload: "(no body)",
@@ -402,8 +402,8 @@ Option B:
   ]
 }`,
     errors: [
-      '401 { "error": "Authentication required" }',
-      '403 { "error": "Admin access required" }',
+      '401 { "error": "Authentication required", "code": "AUTHENTICATION_REQUIRED" }',
+      '403 { "error": "Required permission is missing", "code": "FORBIDDEN" }',
     ],
   },
   {
@@ -411,7 +411,7 @@ Option B:
     summary:
       "Updates timeout settings in Postgres and refreshes the in-memory cache immediately. Active sessions keep grandfathered deadlines.",
     endpoint: "PUT /api/admin/settings",
-    auth: "Authenticated admin + CSRF + recent auth",
+    auth: "settings:update permission + CSRF + recent auth",
     functions: [
       'routes/admin.ts → PUT "/settings"',
       "services/settings.service.ts → validateSettingUpdates, updateSettings, initializeSettings",
@@ -427,13 +427,97 @@ Option B:
   "settings": [ /* full updated snapshot */ ]
 }`,
     errors: [
-      '401 { "error": "Recent authentication required" }',
+      '401 { "error": "Recent authentication required", "code": "RECENT_AUTH_REQUIRED" }',
       '400 { "error": "session.absolute_ttl_ms must be greater than or equal to session.idle_ttl_ms" }',
-      '403 { "error": "Admin access required" }',
+      '403 { "error": "Required permission is missing", "code": "FORBIDDEN" }',
     ],
   },
   {
-    title: "16. Health check",
+    title: "16. User access (list)",
+    summary:
+      "Searches users with bounded cursor pagination and returns their assigned fixed roles.",
+    endpoint: "GET /api/admin/users?search=&limit=&cursor=",
+    auth: "users:read permission",
+    functions: [
+      'routes/admin.ts → GET "/users"',
+      "middleware/requirePermission.ts → requirePermission",
+      "services/authorization.service.ts → listUsersWithRoles",
+    ],
+    payload: "(no body)",
+    success: `200
+{
+  "users": [
+    {
+      "id": "uuid",
+      "email": "user@example.com",
+      "roles": ["user", "support"],
+      "createdAt": "2026-09-30T10:00:00.000Z"
+    }
+  ],
+  "nextCursor": null
+}`,
+    errors: [
+      '400 { "error": "Invalid user query", "code": "INVALID_USER_QUERY" }',
+      '403 { "error": "Required permission is missing", "code": "FORBIDDEN" }',
+    ],
+  },
+  {
+    title: "17. Fixed roles (list)",
+    summary:
+      "Returns migration-owned role definitions and their permission bundles.",
+    endpoint: "GET /api/admin/roles",
+    auth: "users:roles:update permission",
+    functions: [
+      'routes/admin.ts → GET "/roles"',
+      "services/authorization.service.ts → listRoles",
+    ],
+    payload: "(no body)",
+    success: `200
+{
+  "roles": [
+    {
+      "key": "administrator",
+      "name": "Administrator",
+      "description": "Full application administration",
+      "permissions": ["settings:read", "settings:update", "users:read", "users:roles:update"]
+    }
+  ]
+}`,
+    errors: [
+      '403 { "error": "Required permission is missing", "code": "FORBIDDEN" }',
+    ],
+  },
+  {
+    title: "18. User roles (replace)",
+    summary:
+      "Atomically replaces a user's fixed roles while retaining the base user role and preventing administrator lockout.",
+    endpoint: "PUT /api/admin/users/:userId/roles",
+    auth: "users:roles:update permission + CSRF + recent auth",
+    functions: [
+      'routes/admin.ts → PUT "/users/:userId/roles"',
+      "services/authorization.service.ts → replaceUserRoles",
+    ],
+    payload: `{
+  "roleKeys": ["user", "settings-manager"]
+}`,
+    success: `200
+{
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com",
+    "roles": ["settings-manager", "user"],
+    "permissions": ["settings:read", "settings:update"]
+  }
+}`,
+    errors: [
+      '401 { "error": "Recent authentication required", "code": "RECENT_AUTH_REQUIRED" }',
+      '400 { "error": "One or more roles are unknown", "code": "INVALID_ROLE_ASSIGNMENT" }',
+      '409 { "error": "The final administrator cannot be removed", "code": "LAST_ADMINISTRATOR" }',
+      '409 { "error": "Administrators cannot remove their own administrator role", "code": "SELF_DEMOTION_NOT_ALLOWED" }',
+    ],
+  },
+  {
+    title: "19. Health check",
     summary: "Liveness/version probe used by containers and smoke tests.",
     endpoint: "GET /health",
     auth: "None",
@@ -449,7 +533,7 @@ Option B:
     errors: [],
   },
   {
-    title: "17. Supporting security controls (cross-cutting)",
+    title: "20. Supporting security controls (cross-cutting)",
     summary:
       "Applied across endpoints rather than as standalone feature APIs.",
     endpoint: "Middleware chain",
@@ -531,8 +615,9 @@ const doc = new Document({
   sections: [{ properties: {}, children }],
 });
 
-const out =
-  "C:/Users/sreej/Projects/auth-system/Backend-Features-API-Reference.docx";
+const out = fileURLToPath(
+  new URL("../Backend-Features-API-Reference.docx", import.meta.url),
+);
 const buf = await Packer.toBuffer(doc);
 fs.writeFileSync(out, buf);
 console.log(out);

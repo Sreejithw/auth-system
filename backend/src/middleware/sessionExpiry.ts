@@ -25,7 +25,11 @@ function destroyExpiredSession(
     }
     res.clearCookie("sid", sessionCookieOptions);
     if (!res.headersSent) {
-      res.status(401).json({ error: "Session expired", reason });
+      res.status(401).json({
+        error: "Session expired",
+        code: "AUTHENTICATION_REQUIRED",
+        reason,
+      });
     }
   });
 }

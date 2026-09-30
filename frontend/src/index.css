@@ -212,6 +212,12 @@ body {
   color: #86efac;
 }
 
+.alert-info {
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  color: #c7d2fe;
+}
+
 /* ---------- Buttons ---------- */
 .btn {
   padding: 11px 16px;
@@ -472,6 +478,119 @@ body {
 
 .settings-input-row input {
   max-width: 160px;
+}
+
+.admin-users-main {
+  place-items: start center;
+}
+
+.admin-users-card {
+  max-width: 900px;
+}
+
+.admin-users-heading,
+.user-access-summary,
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.admin-users-heading {
+  margin-bottom: 20px;
+}
+
+.admin-users-heading .auth-subtitle {
+  margin: 4px 0 0;
+}
+
+.user-search {
+  margin: 18px 0;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-access-row {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.user-access-summary > div:first-child,
+.role-option span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.role-badges {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.role-badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.role-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.role-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.role-option input {
+  margin-top: 4px;
+}
+
+.pagination {
+  margin-top: 20px;
+}
+
+.users-loading {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+}
+
+.empty-state {
+  padding: 32px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+@media (max-width: 680px) {
+  .dashboard-header,
+  .admin-users-heading,
+  .user-access-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-nav {
+    flex-wrap: wrap;
+  }
 }
 
 /* ---------- Loading spinner ---------- */

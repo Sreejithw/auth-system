@@ -11,6 +11,9 @@ const { apiMocks } = vi.hoisted(() => ({
     me: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
+    getAdminUsers: vi.fn(),
+    getAdminRoles: vi.fn(),
+    updateAdminUserRoles: vi.fn(),
     register: vi.fn(),
     login: vi.fn(),
     verifyMfa: vi.fn(),
@@ -28,9 +31,11 @@ vi.mock('../src/api/client', () => ({
   clearCsrfToken: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number;
-    constructor(message: string, status: number) {
+    code?: string;
+    constructor(message: string, status: number, code?: string) {
       super(message);
       this.status = status;
+      this.code = code;
     }
   },
 }));
@@ -65,6 +70,8 @@ describe('Admin settings screen', () => {
   it('hides settings from non-admin users', async () => {
     apiMocks.me.mockResolvedValue({
       user: { id: 'u1', email: 'user@example.com' },
+      roles: ['user'],
+      permissions: [],
       isAdmin: false,
       session: { idleExpiresAt: null, absoluteExpiresAt: null },
     });
@@ -77,6 +84,8 @@ describe('Admin settings screen', () => {
   it('loads and saves settings for admin users', async () => {
     apiMocks.me.mockResolvedValue({
       user: { id: 'a1', email: 'admin@example.com' },
+      roles: ['user', 'administrator'],
+      permissions: ['settings:read', 'settings:update', 'users:read', 'users:roles:update'],
       isAdmin: true,
       session: {
         idleExpiresAt: '2026-08-23T06:00:00.000Z',

@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { api, ApiError } from '../api/client';
 import type { AppSetting, SettingKey, SettingUpdate } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
+import { PERMISSIONS } from '../auth/permissions';
 
 type DraftValue = {
   kind: 'ms' | 'int';
@@ -83,7 +84,8 @@ function parseDraft(key: SettingKey, draft: DraftValue): SettingUpdate | { error
 }
 
 export default function AdminSettings() {
-  const { refreshSession } = useAuth();
+  const { refreshSession, hasPermission } = useAuth();
+  const canUpdate = hasPermission(PERMISSIONS.SETTINGS_UPDATE);
   const [settings, setSettings] = useState<AppSetting[]>([]);
   const [drafts, setDrafts] = useState<Record<string, DraftValue>>({});
   const [loading, setLoading] = useState(true);
@@ -121,6 +123,7 @@ export default function AdminSettings() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (!canUpdate) return;
     setError(null);
     setSuccess(null);
 
@@ -146,7 +149,14 @@ export default function AdminSettings() {
       setSuccess('Settings saved. New sessions use updated timeouts immediately.');
       await refreshSession();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to save settings');
+      if (err instanceof ApiError && err.code === 'RECENT_AUTH_REQUIRED') {
+        setError('Please sign out and sign back in before changing settings.');
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Failed to save settings');
+      }
+      if (err instanceof ApiError && err.code === 'FORBIDDEN') {
+        await refreshSession();
+      }
     } finally {
       setSaving(false);
     }
@@ -178,6 +188,11 @@ export default function AdminSettings() {
             Durations are stored in the database. Active sessions keep their original
             expiry deadlines; new logins pick up changes immediately.
           </p>
+          {!canUpdate && (
+            <div className="alert alert-info">
+              You have read-only access to these settings.
+            </div>
+          )}
 
           {error && <div className="alert alert-error">{error}</div>}
           {success && <div className="alert alert-success">{success}</div>}
@@ -200,6 +215,7 @@ export default function AdminSettings() {
                           min={1}
                           step={1}
                           value={draft.display}
+                          disabled={!canUpdate}
                           onChange={(event) =>
                             setDrafts((prev) => ({
                               ...prev,
@@ -215,9 +231,11 @@ export default function AdminSettings() {
               </section>
             ))}
 
-            <button type="submit" className="btn btn-primary" disabled={saving}>
-              {saving ? 'Saving…' : 'Save settings'}
-            </button>
+            {canUpdate && (
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                {saving ? 'Saving…' : 'Save settings'}
+              </button>
+            )}
           </form>
         </div>
       </main>
