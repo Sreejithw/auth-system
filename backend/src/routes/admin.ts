@@ -1,8 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { requireAuth } from "../middleware/requireAuth.js";
-import { requireAdmin } from "../middleware/requireAdmin.js";
+import { requirePermission } from "../middleware/requirePermission.js";
 import { getDurationMs } from "../services/settings.service.js";
+import {
+  AuthorizationError,
+  listRoles,
+  listUsersWithRoles,
+  PERMISSIONS,
+  replaceUserRoles,
+} from "../services/authorization.service.js";
 import {
   getAllSettings,
   updateSettings,
@@ -30,6 +36,22 @@ const putBodySchema = z
   })
   .strict();
 
+const usersQuerySchema = z
+  .object({
+    search: z.string().trim().max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    cursor: z.string().min(1).max(1000).optional(),
+  })
+  .strict();
+
+const userIdSchema = z.uuid();
+
+const roleUpdateSchema = z
+  .object({
+    roleKeys: z.array(z.string().min(1).max(100)).max(20),
+  })
+  .strict();
+
 function hasRecentAuthentication(req: Request): boolean {
   return (
     typeof req.session.authenticatedAt === "number" &&
@@ -39,8 +61,7 @@ function hasRecentAuthentication(req: Request): boolean {
 
 adminRouter.get(
   "/settings",
-  requireAuth,
-  requireAdmin,
+  requirePermission(PERMISSIONS.SETTINGS_READ),
   (_req: Request, res: Response) => {
     res.set("Cache-Control", "no-store");
     res.status(200).json({ settings: getAllSettings() });
@@ -49,11 +70,13 @@ adminRouter.get(
 
 adminRouter.put(
   "/settings",
-  requireAuth,
-  requireAdmin,
+  requirePermission(PERMISSIONS.SETTINGS_UPDATE),
   async (req: Request, res: Response) => {
     if (!hasRecentAuthentication(req)) {
-      res.status(401).json({ error: "Recent authentication required" });
+      res.status(401).json({
+        error: "Recent authentication required",
+        code: "RECENT_AUTH_REQUIRED",
+      });
       return;
     }
 
@@ -87,5 +110,97 @@ adminRouter.put(
 
     res.set("Cache-Control", "no-store");
     res.status(200).json({ settings: result.settings });
+  },
+);
+
+adminRouter.get(
+  "/users",
+  requirePermission(PERMISSIONS.USERS_READ),
+  async (req: Request, res: Response) => {
+    const parsed = usersQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: parsed.error.issues[0]?.message ?? "Invalid user query",
+        code: "INVALID_USER_QUERY",
+      });
+      return;
+    }
+    try {
+      res.status(200).json(await listUsersWithRoles(parsed.data));
+    } catch (err) {
+      if (err instanceof AuthorizationError) {
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+  },
+);
+
+adminRouter.get(
+  "/roles",
+  requirePermission(PERMISSIONS.USERS_ROLES_UPDATE),
+  async (_req: Request, res: Response) => {
+    res.status(200).json({ roles: await listRoles() });
+  },
+);
+
+adminRouter.put(
+  "/users/:userId/roles",
+  requirePermission(PERMISSIONS.USERS_ROLES_UPDATE),
+  async (req: Request, res: Response) => {
+    if (!hasRecentAuthentication(req)) {
+      res.status(401).json({
+        error: "Recent authentication required",
+        code: "RECENT_AUTH_REQUIRED",
+      });
+      return;
+    }
+    const userId = userIdSchema.safeParse(req.params.userId);
+    const body = roleUpdateSchema.safeParse(req.body);
+    if (!userId.success) {
+      res.status(400).json({
+        error: "Invalid user ID",
+        code: "INVALID_ROLE_ASSIGNMENT",
+      });
+      return;
+    }
+    if (!body.success) {
+      res.status(400).json({
+        error: body.error.issues[0]?.message ?? "Invalid role assignment",
+        code: "INVALID_ROLE_ASSIGNMENT",
+      });
+      return;
+    }
+    try {
+      const user = await replaceUserRoles(
+        req.session.userId as string,
+        userId.data,
+        body.data.roleKeys,
+      );
+      logger.info(
+        {
+          actorUserId: req.session.userId,
+          targetUserId: userId.data,
+          roles: user.roles,
+        },
+        "user_roles_updated",
+      );
+      res.status(200).json({ user });
+    } catch (err) {
+      if (err instanceof AuthorizationError) {
+        logger.warn(
+          {
+            actorUserId: req.session.userId,
+            targetUserId: userId.data,
+            reason: err.code,
+          },
+          "user_roles_update_denied",
+        );
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
   },
 );

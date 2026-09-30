@@ -68,7 +68,11 @@ describe("sessionExpiryMiddleware", () => {
 
     const res = await request(app).get("/api/auth/me");
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: "Session expired", reason: "absolute" });
+    expect(res.body).toEqual({
+      error: "Session expired",
+      code: "AUTHENTICATION_REQUIRED",
+      reason: "absolute",
+    });
   });
 
   it("returns 401 with reason idle when idle deadline has passed", async () => {
@@ -82,7 +86,11 @@ describe("sessionExpiryMiddleware", () => {
 
     const res = await request(app).get("/api/auth/me");
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: "Session expired", reason: "idle" });
+    expect(res.body).toEqual({
+      error: "Session expired",
+      code: "AUTHENTICATION_REQUIRED",
+      reason: "idle",
+    });
   });
 
   it("extends idle deadline using grandfathered idleTtlMsAtIssue", async () => {

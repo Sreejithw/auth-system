@@ -12,15 +12,31 @@ process.env.DATABASE_URL = "postgres://unused:unused@localhost:5432/unused";
 process.env.SESSION_SECRET = TEST_SESSION_SECRET;
 process.env.CSRF_SECRET = TEST_CSRF_SECRET;
 
-vi.mock("../src/services/user.service.js", () => ({
-  findAdminById: vi.fn(async (id: string) => {
-    if (id === "admin-1") return { id, is_admin: true };
-    if (id === "user-1") return { id, is_admin: false };
-    return null;
+vi.mock("../src/services/authorization.service.js", () => ({
+  PERMISSIONS: {
+    SETTINGS_READ: "settings:read",
+    SETTINGS_UPDATE: "settings:update",
+    USERS_READ: "users:read",
+    USERS_ROLES_UPDATE: "users:roles:update",
+  },
+  AuthorizationError: class AuthorizationError extends Error {},
+  userHasPermission: vi.fn(async (id: string, permission: string) => {
+    if (id === "admin-1") return true;
+    if (id === "support-1") return permission === "users:read";
+    if (id === "settings-manager-1") {
+      return permission === "settings:read" || permission === "settings:update";
+    }
+    return false;
   }),
+  listRoles: vi.fn(async () => []),
+  listUsersWithRoles: vi.fn(async () => ({ users: [], nextCursor: null })),
+  replaceUserRoles: vi.fn(),
 }));
 
 const { adminRouter } = await import("../src/routes/admin.js");
+const authorizationMocks = await import(
+  "../src/services/authorization.service.js"
+);
 const {
   configureSettingsDatabase,
   getDurationMs,
@@ -86,8 +102,9 @@ function buildApp(userId: string | null, authenticatedAt = Date.now()) {
   return app;
 }
 
-describe("admin settings API", () => {
+describe("admin authorization API", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     resetSettingsForTests();
     configureSettingsDatabase(
       fakeDatabase([
@@ -144,5 +161,100 @@ describe("admin settings API", () => {
         settings: [{ key: "session.idle_ttl_ms", valueMs: 60_000 }],
       });
     expect(res.status).toBe(401);
+    expect(res.body.code).toBe("RECENT_AUTH_REQUIRED");
+  });
+
+  it("allows support users to list users without exposing role mutation", async () => {
+    vi.mocked(authorizationMocks.listUsersWithRoles).mockResolvedValueOnce({
+      users: [
+        {
+          id: "00000000-0000-4000-8000-000000000002",
+          email: "target@example.com",
+          roles: ["user"],
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const listResponse = await request(buildApp("support-1")).get(
+      "/api/admin/users?search=target&limit=20",
+    );
+    expect(listResponse.status).toBe(200);
+    expect(listResponse.body.users[0].email).toBe("target@example.com");
+    expect(authorizationMocks.listUsersWithRoles).toHaveBeenCalledWith({
+      search: "target",
+      limit: 20,
+    });
+
+    const rolesResponse = await request(buildApp("support-1")).get(
+      "/api/admin/roles",
+    );
+    expect(rolesResponse.status).toBe(403);
+    expect(rolesResponse.body.code).toBe("FORBIDDEN");
+  });
+
+  it("returns the fixed role catalog to role administrators", async () => {
+    vi.mocked(authorizationMocks.listRoles).mockResolvedValueOnce([
+      {
+        key: "user",
+        name: "User",
+        description: "Base role",
+        permissions: [],
+      },
+    ]);
+
+    const response = await request(buildApp("admin-1")).get("/api/admin/roles");
+    expect(response.status).toBe(200);
+    expect(response.body.roles).toEqual([
+      {
+        key: "user",
+        name: "User",
+        description: "Base role",
+        permissions: [],
+      },
+    ]);
+  });
+
+  it("requires recent authentication before replacing roles", async () => {
+    const stale = Date.now() - 60 * 60 * 1000;
+    const response = await request(buildApp("admin-1", stale))
+      .put("/api/admin/users/00000000-0000-4000-8000-000000000002/roles")
+      .send({ roleKeys: ["user", "support"] });
+
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("RECENT_AUTH_REQUIRED");
+    expect(authorizationMocks.replaceUserRoles).not.toHaveBeenCalled();
+  });
+
+  it("validates and replaces a user's fixed roles", async () => {
+    vi.mocked(authorizationMocks.replaceUserRoles).mockResolvedValueOnce({
+      id: "00000000-0000-4000-8000-000000000002",
+      email: "target@example.com",
+      roles: ["settings-manager", "user"],
+      permissions: ["settings:read", "settings:update"],
+    });
+
+    const response = await request(buildApp("admin-1"))
+      .put("/api/admin/users/00000000-0000-4000-8000-000000000002/roles")
+      .send({ roleKeys: ["user", "settings-manager"] });
+
+    expect(response.status).toBe(200);
+    expect(response.body.user.roles).toEqual(["settings-manager", "user"]);
+    expect(authorizationMocks.replaceUserRoles).toHaveBeenCalledWith(
+      "admin-1",
+      "00000000-0000-4000-8000-000000000002",
+      ["user", "settings-manager"],
+    );
+  });
+
+  it("rejects malformed role assignment requests", async () => {
+    const response = await request(buildApp("admin-1"))
+      .put("/api/admin/users/not-a-uuid/roles")
+      .send({ roleKeys: ["user"], unexpected: true });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("INVALID_ROLE_ASSIGNMENT");
+    expect(authorizationMocks.replaceUserRoles).not.toHaveBeenCalled();
   });
 });

@@ -57,7 +57,10 @@ function hasRecentAuthentication(req: Request): boolean {
 
 function requireRecentAuth(req: Request, res: Response): boolean {
   if (!hasRecentAuthentication(req)) {
-    res.status(401).json({ error: "Recent authentication required" });
+    res.status(401).json({
+      error: "Recent authentication required",
+      code: "RECENT_AUTH_REQUIRED",
+    });
     return false;
   }
   return true;
@@ -79,7 +82,10 @@ mfaRouter.post("/setup", requireAuth, async (req: Request, res: Response) => {
 
   const user = await findPublicById(req.session.userId as string);
   if (!user) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({
+      error: "Authentication required",
+      code: "AUTHENTICATION_REQUIRED",
+    });
     return;
   }
 
@@ -192,8 +198,6 @@ mfaRouter.post("/verify", async (req: Request, res: Response) => {
   }
 
   if (!(await mfaService.verifyAnyMfaCredential(challenge.userId, code))) {
-    delete req.session.pendingMfaChallenge;
-    await saveSession(req);
     res.status(401).json({ error: GENERIC_MFA_ERROR });
     return;
   }

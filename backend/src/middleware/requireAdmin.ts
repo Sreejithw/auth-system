@@ -1,26 +1,11 @@
-import type { Request, Response, NextFunction } from "express";
-import { findAdminById } from "../services/user.service.js";
+import { requirePermission } from "./requirePermission.js";
+import { PERMISSIONS } from "../services/authorization.service.js";
 
 /**
- * Requires an authenticated admin session. Must run after requireAuth (or
- * check userId itself).
+ * @deprecated Prefer a resource-specific requirePermission(...) guard.
+ * Retained as a compatibility alias for operations reserved for full
+ * administrators; RBAC, not users.is_admin, is authoritative.
  */
-export async function requireAdmin(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
-  const userId = req.session?.userId;
-  if (!userId) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-
-  const user = await findAdminById(userId);
-  if (!user?.is_admin) {
-    res.status(403).json({ error: "Admin access required" });
-    return;
-  }
-
-  next();
-}
+export const requireAdmin = requirePermission(
+  PERMISSIONS.USERS_ROLES_UPDATE,
+);

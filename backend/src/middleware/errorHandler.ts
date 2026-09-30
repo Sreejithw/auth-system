@@ -19,7 +19,10 @@ export function errorHandler(
   _next: NextFunction,
 ): void {
   if (err === invalidCsrfTokenError || isCsrfError(err)) {
-    res.status(403).json({ error: "Invalid CSRF token" });
+    res.status(403).json({
+      error: "Invalid CSRF token",
+      code: "INVALID_CSRF_TOKEN",
+    });
     return;
   }
 

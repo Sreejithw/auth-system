@@ -1,5 +1,6 @@
 import { getRuntimeConfig } from '../config/runtimeConfig';
 import type { ClientFlags } from '../flags/definitions';
+import type { Permission } from '../auth/permissions';
 
 export interface ApiUser {
   id: string;
@@ -13,8 +14,31 @@ export interface SessionInfo {
 
 export interface MeResponse {
   user: ApiUser;
+  roles: string[];
+  permissions: Permission[];
   isAdmin: boolean;
   session: SessionInfo;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  roles: string[];
+  createdAt: string;
+}
+
+export interface AdminRole {
+  key: string;
+  name: string;
+  description: string;
+  permissions: Permission[];
+}
+
+export interface UpdatedAdminUser {
+  id: string;
+  email: string;
+  roles: string[];
+  permissions: Permission[];
 }
 
 export type SettingKey =
@@ -72,11 +96,13 @@ export type LoginResponse =
  */
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -104,15 +130,16 @@ export function clearCsrfToken(): void {
   csrfToken = null;
 }
 
-async function parseError(res: Response): Promise<string> {
+async function parseError(res: Response): Promise<{ message: string; code?: string }> {
   try {
-    const data = await res.json();
-    if (data && typeof data.message === 'string') return data.message;
-    if (data && typeof data.error === 'string') return data.error;
+    const data = (await res.json()) as { message?: unknown; error?: unknown; code?: unknown };
+    const code = typeof data.code === 'string' ? data.code : undefined;
+    if (typeof data.message === 'string') return { message: data.message, code };
+    if (typeof data.error === 'string') return { message: data.error, code };
   } catch {
     /* response had no JSON body */
   }
-  return `Request failed (${res.status})`;
+  return { message: `Request failed (${res.status})` };
 }
 
 interface RequestOptions {
@@ -142,15 +169,19 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   let res = await doFetch();
 
-  // A 403 on a mutation usually means the CSRF token is stale/rotated; refresh once and retry.
+  // Only retry an explicitly stale CSRF token. Authorization failures must reach the caller.
   if (res.status === 403 && isMutation) {
-    clearCsrfToken();
-    headers['x-csrf-token'] = await fetchCsrfToken();
-    res = await doFetch();
+    const error = await parseError(res.clone());
+    if (error.code === 'INVALID_CSRF_TOKEN') {
+      clearCsrfToken();
+      headers['x-csrf-token'] = await fetchCsrfToken();
+      res = await doFetch();
+    }
   }
 
   if (!res.ok) {
-    throw new ApiError(await parseError(res), res.status);
+    const error = await parseError(res);
+    throw new ApiError(error.message, res.status, error.code);
   }
 
   if (res.status === 204) {
@@ -176,6 +207,35 @@ export const api = {
       method: 'PUT',
       body: { settings },
     });
+  },
+  getAdminUsers(params: {
+    search?: string;
+    limit?: number;
+    cursor?: string;
+  } = {}): Promise<{ users: AdminUser[]; nextCursor: string | null }> {
+    const query = new URLSearchParams();
+    if (params.search) query.set('search', params.search);
+    if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.cursor) query.set('cursor', params.cursor);
+    const suffix = query.size > 0 ? `?${query.toString()}` : '';
+    return request<{ users: AdminUser[]; nextCursor: string | null }>(
+      `/api/admin/users${suffix}`,
+    );
+  },
+  getAdminRoles(): Promise<{ roles: AdminRole[] }> {
+    return request<{ roles: AdminRole[] }>('/api/admin/roles');
+  },
+  updateAdminUserRoles(
+    userId: string,
+    roleKeys: string[],
+  ): Promise<{ user: UpdatedAdminUser }> {
+    return request<{ user: UpdatedAdminUser }>(
+      `/api/admin/users/${encodeURIComponent(userId)}/roles`,
+      {
+        method: 'PUT',
+        body: { roleKeys },
+      },
+    );
   },
   register(email: string, password: string): Promise<{ message: string }> {
     return request<{ message: string }>('/api/auth/register', {

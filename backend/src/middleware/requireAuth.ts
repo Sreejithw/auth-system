@@ -10,7 +10,10 @@ export function requireAuth(
   next: NextFunction,
 ): void {
   if (!req.session?.userId) {
-    res.status(401).json({ error: "Authentication required" });
+    res.status(401).json({
+      error: "Authentication required",
+      code: "AUTHENTICATION_REQUIRED",
+    });
     return;
   }
   next();
